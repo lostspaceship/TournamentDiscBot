@@ -13,8 +13,17 @@ import { prisma } from "../config/prisma.js";
 import { BracketEngineFactory } from "../domain/bracket/engine.js";
 import { seedEntrants } from "../domain/bracket/seeding.js";
 import type { BracketSnapshot, SeededEntrant } from "../domain/bracket/types.js";
+import { TournamentStateMachine } from "../domain/tournament/state-machine.js";
+import type {
+  TournamentAction as DomainTournamentAction,
+  TournamentStateContext,
+  TournamentStatus as DomainTournamentStatus
+} from "../domain/tournament/types.js";
 import { GuildConfigRepository } from "../repositories/guild-config-repository.js";
 import { TournamentRepository } from "../repositories/tournament-repository.js";
+import { buildSeededRegistrations, getEligibleRegistrationsForBracket } from "./support/bracket-snapshot.js";
+import type { BracketSyncTarget } from "./support/bracket-sync-target.js";
+import { lockTournamentTx, writeAuditLogTx } from "./support/transaction-utils.js";
 import { ConflictError, NotFoundError } from "../utils/errors.js";
 import { sanitizeUserText } from "../utils/sanitize.js";
 
@@ -52,10 +61,22 @@ interface ModerationInput extends SimpleTournamentActionInput {
   reason: string;
 }
 
+interface ReseedTournamentInput extends SimpleTournamentActionInput {
+  method?: SeedingMethod;
+  reason: string;
+}
+
+type TournamentWithRelations = NonNullable<
+  Awaited<ReturnType<TournamentRepository["getTournament"]>>
+>;
+
 export class AdminTournamentService {
+  private readonly stateMachine = new TournamentStateMachine();
+
   public constructor(
     private readonly guildConfigRepository: GuildConfigRepository,
-    private readonly tournamentRepository: TournamentRepository
+    private readonly tournamentRepository: TournamentRepository,
+    private readonly bracketSyncTarget?: BracketSyncTarget
   ) {}
 
   public async createTournament(input: CreateTournamentInput) {
@@ -74,6 +95,7 @@ export class AdminTournamentService {
           bestOfDefault: input.bestOfDefault,
           requireCheckIn: input.requireCheckIn ?? false,
           allowWaitlist: input.allowWaitlist ?? true,
+          bracketMessageChannelId: guildConfig.tournamentAnnouncementChannelId,
           settings: {
             create: {
               seedingMethod: SeedingMethod.RANDOM,
@@ -85,7 +107,7 @@ export class AdminTournamentService {
         include: { settings: true }
       });
 
-      await this.writeAuditLogTx(tx, {
+      await writeAuditLogTx(tx, {
         tournamentId: created.id,
         guildId: input.guildId,
         actorUserId: input.actorUserId,
@@ -97,33 +119,46 @@ export class AdminTournamentService {
       return created;
     });
 
+    await this.bracketSyncTarget?.syncTournamentBracket(tournament.id);
     return tournament;
   }
 
   public async configureTournament(input: ConfigTournamentInput) {
-    const tournament = await this.requireTournament(input.tournamentId, input.guildId);
-    if (tournament.status !== TournamentStatus.DRAFT) {
-      throw new ConflictError("Tournament configuration can only be changed while in draft state.");
-    }
+    const updated = await prisma.$transaction(async (tx) => {
+      await lockTournamentTx(tx, input.tournamentId);
+      const tournament = await this.loadTournamentTx(tx, input.tournamentId, input.guildId);
 
-    return prisma.$transaction(async (tx) => {
+      if (tournament.status !== TournamentStatus.DRAFT) {
+        throw new ConflictError("Tournament configuration can only be changed while in draft state.");
+      }
+
+      const data: Prisma.TournamentUpdateInput = {
+        mutualExclusionKey:
+          input.mutualExclusionKey === undefined
+            ? undefined
+            : input.mutualExclusionKey === null
+              ? null
+              : sanitizeUserText(input.mutualExclusionKey, 50),
+        allowWithdrawals: input.allowWithdrawals ?? undefined,
+        version: {
+          increment: 1
+        },
+        settings: {
+          update: {
+            seedingMethod: input.seedingMethod,
+            requireOpponentConfirmation: input.requireOpponentConfirmation,
+            grandFinalResetEnabled: input.grandFinalResetEnabled
+          }
+        }
+      };
+
       const updated = await tx.tournament.update({
         where: { id: tournament.id },
-        data: {
-          mutualExclusionKey: input.mutualExclusionKey ?? undefined,
-          allowWithdrawals: input.allowWithdrawals ?? undefined,
-          settings: {
-            update: {
-              seedingMethod: input.seedingMethod,
-              requireOpponentConfirmation: input.requireOpponentConfirmation,
-              grandFinalResetEnabled: input.grandFinalResetEnabled
-            }
-          }
-        },
+        data,
         include: { settings: true }
       });
 
-      await this.writeAuditLogTx(tx, {
+      await writeAuditLogTx(tx, {
         tournamentId: tournament.id,
         guildId: input.guildId,
         actorUserId: input.actorUserId,
@@ -134,89 +169,68 @@ export class AdminTournamentService {
 
       return updated;
     });
+    await this.bracketSyncTarget?.syncTournamentBracket(input.tournamentId);
+    return updated;
   }
 
   public async openTournament(input: SimpleTournamentActionInput) {
-    const tournament = await this.requireTournament(input.tournamentId, input.guildId);
-    if (
-      tournament.status !== TournamentStatus.DRAFT &&
-      tournament.status !== TournamentStatus.REGISTRATION_CLOSED
-    ) {
-      throw new ConflictError("Only draft or closed tournaments can open registration.");
-    }
-
-    return this.updateTournamentStatus(
-      tournament.id,
-      input.guildId,
-      input.actorUserId,
-      TournamentStatus.REGISTRATION_OPEN,
-      AuditAction.TOURNAMENT_OPENED
-    );
+    const result = await this.transitionTournamentStatus({
+      guildId: input.guildId,
+      tournamentId: input.tournamentId,
+      actorUserId: input.actorUserId,
+      action: undefined,
+      resolveAction: (status) =>
+        status === TournamentStatus.REGISTRATION_CLOSED
+          ? "REOPEN_REGISTRATION"
+          : "OPEN_REGISTRATION",
+      auditAction: AuditAction.TOURNAMENT_OPENED
+    });
+    await this.bracketSyncTarget?.syncTournamentBracket(input.tournamentId);
+    return result;
   }
 
   public async closeTournament(input: SimpleTournamentActionInput) {
-    const tournament = await this.requireTournament(input.tournamentId, input.guildId);
-    if (tournament.status !== TournamentStatus.REGISTRATION_OPEN) {
-      throw new ConflictError("Registration is not open.");
-    }
-
-    const nextStatus = tournament.requireCheckIn
-      ? TournamentStatus.CHECK_IN
-      : TournamentStatus.REGISTRATION_CLOSED;
-
-    return this.updateTournamentStatus(
-      tournament.id,
-      input.guildId,
-      input.actorUserId,
-      nextStatus,
-      AuditAction.TOURNAMENT_CLOSED
-    );
+    const result = await this.transitionTournamentStatus({
+      guildId: input.guildId,
+      tournamentId: input.tournamentId,
+      actorUserId: input.actorUserId,
+      action: "CLOSE_REGISTRATION",
+      auditAction: AuditAction.TOURNAMENT_CLOSED
+    });
+    await this.bracketSyncTarget?.syncTournamentBracket(input.tournamentId);
+    return result;
   }
 
   public async startTournament(input: SimpleTournamentActionInput) {
-    const tournament = await this.requireTournamentWithRelations(input.tournamentId, input.guildId);
-    if (
-      tournament.status !== TournamentStatus.REGISTRATION_CLOSED &&
-      tournament.status !== TournamentStatus.CHECK_IN
-    ) {
-      throw new ConflictError("Tournament must be closed before it can be started.");
-    }
-
-    const activeRegistrations = tournament.registrations.filter(
-      (entry) => entry.status === RegistrationStatus.ACTIVE
-    );
-    const eligibleRegistrations = tournament.requireCheckIn
-      ? activeRegistrations.filter((entry) => Boolean(entry.checkIn))
-      : activeRegistrations;
-
-    if (eligibleRegistrations.length < 2) {
-      throw new ConflictError("At least two eligible participants are required to start.");
-    }
-
-    const seededRegistrations = this.seedRegistrations(
-      eligibleRegistrations.map((entry) => ({
-        registrationId: entry.id,
-        participantId: entry.participantId,
-        rating: entry.participant.rating,
-        joinedAt: entry.joinedAt,
-        existingSeed: entry.seed?.seedNumber ?? null
-      })),
-      tournament.settings?.seedingMethod ?? SeedingMethod.RANDOM
-    );
-
-    const engine = BracketEngineFactory.create(
-      tournament.format === TournamentFormat.DOUBLE_ELIMINATION
-        ? "DOUBLE_ELIMINATION"
-        : "SINGLE_ELIMINATION"
-    );
-
-    const snapshot = engine.generate({
-      entrants: seededRegistrations,
-      bestOf: tournament.bestOfDefault,
-      grandFinalResetEnabled: tournament.settings?.grandFinalResetEnabled ?? true
-    });
-
     await prisma.$transaction(async (tx) => {
+      await lockTournamentTx(tx, input.tournamentId);
+      const tournament = await this.loadTournamentWithRelationsTx(tx, input.tournamentId, input.guildId);
+      const eligibleRegistrations = getEligibleRegistrationsForBracket(tournament);
+
+      if (tournament.brackets.length > 0) {
+        throw new ConflictError("A bracket already exists for this tournament.");
+      }
+
+      const nextStatus = this.resolveNextStatus(
+        tournament.status,
+        "START",
+        this.buildTransitionContext(tournament, eligibleRegistrations.length)
+      );
+
+      const seededRegistrations = buildSeededRegistrations(tournament);
+
+      const engine = BracketEngineFactory.create(
+        tournament.format === TournamentFormat.DOUBLE_ELIMINATION
+          ? "DOUBLE_ELIMINATION"
+          : "SINGLE_ELIMINATION"
+      );
+
+      const snapshot = engine.generate({
+        entrants: seededRegistrations,
+        bestOf: tournament.bestOfDefault,
+        grandFinalResetEnabled: tournament.settings?.grandFinalResetEnabled ?? true
+      });
+
       await tx.seed.deleteMany({ where: { tournamentId: tournament.id } });
       for (const entrant of seededRegistrations) {
         await tx.seed.create({
@@ -230,15 +244,20 @@ export class AdminTournamentService {
 
       await this.persistBracketSnapshotTx(tx, tournament.id, snapshot);
 
+      const tournamentUpdateData: Prisma.TournamentUpdateInput = {
+        status: nextStatus,
+        startedAt: new Date(),
+        version: {
+          increment: 1
+        }
+      };
+
       await tx.tournament.update({
         where: { id: tournament.id },
-        data: {
-          status: TournamentStatus.IN_PROGRESS,
-          startedAt: new Date()
-        }
+        data: tournamentUpdateData
       });
 
-      await this.writeAuditLogTx(tx, {
+      await writeAuditLogTx(tx, {
         tournamentId: tournament.id,
         guildId: input.guildId,
         actorUserId: input.actorUserId,
@@ -247,7 +266,7 @@ export class AdminTournamentService {
         targetId: tournament.id
       });
 
-      await this.writeAuditLogTx(tx, {
+      await writeAuditLogTx(tx, {
         tournamentId: tournament.id,
         guildId: input.guildId,
         actorUserId: input.actorUserId,
@@ -256,39 +275,46 @@ export class AdminTournamentService {
         targetId: tournament.id
       });
     });
+    await this.bracketSyncTarget?.syncTournamentBracket(input.tournamentId);
   }
 
-  public async reseedTournament(input: SimpleTournamentActionInput & { method?: SeedingMethod }) {
-    const tournament = await this.requireTournamentWithRelations(input.tournamentId, input.guildId);
-    if (
-      tournament.status !== TournamentStatus.DRAFT &&
-      tournament.status !== TournamentStatus.REGISTRATION_OPEN &&
-      tournament.status !== TournamentStatus.REGISTRATION_CLOSED &&
-      tournament.status !== TournamentStatus.CHECK_IN
-    ) {
-      throw new ConflictError("Tournament can only be reseeded before it starts.");
-    }
-
-    const activeRegistrations = tournament.registrations.filter(
-      (entry) => entry.status === RegistrationStatus.ACTIVE
-    );
-    if (activeRegistrations.length < 2) {
-      throw new ConflictError("At least two active registrations are required to reseed.");
-    }
-
-    const method = input.method ?? tournament.settings?.seedingMethod ?? SeedingMethod.RANDOM;
-    const seededRegistrations = this.seedRegistrations(
-      activeRegistrations.map((entry) => ({
-        registrationId: entry.id,
-        participantId: entry.participantId,
-        rating: entry.participant.rating,
-        joinedAt: entry.joinedAt,
-        existingSeed: entry.seed?.seedNumber ?? null
-      })),
-      method
-    );
-
+  public async reseedTournament(input: ReseedTournamentInput) {
     await prisma.$transaction(async (tx) => {
+      await lockTournamentTx(tx, input.tournamentId);
+      const tournament = await this.loadTournamentWithRelationsTx(tx, input.tournamentId, input.guildId);
+
+      if (
+        tournament.status !== TournamentStatus.DRAFT &&
+        tournament.status !== TournamentStatus.REGISTRATION_OPEN &&
+        tournament.status !== TournamentStatus.REGISTRATION_CLOSED &&
+        tournament.status !== TournamentStatus.CHECK_IN
+      ) {
+        throw new ConflictError("Tournament can only be reseeded before it starts.");
+      }
+
+      if (tournament.brackets.length > 0) {
+        throw new ConflictError("The bracket cannot be reseeded after it has been generated.");
+      }
+
+      const activeRegistrations = tournament.registrations.filter(
+        (entry) => entry.status === RegistrationStatus.ACTIVE
+      );
+      if (activeRegistrations.length < 2) {
+        throw new ConflictError("At least two active registrations are required to reseed.");
+      }
+
+      const method = input.method ?? tournament.settings?.seedingMethod ?? SeedingMethod.RANDOM;
+      const seededRegistrations = this.seedRegistrations(
+        activeRegistrations.map((entry) => ({
+          registrationId: entry.id,
+          participantId: entry.participantId,
+          rating: entry.participant.rating,
+          joinedAt: entry.joinedAt,
+          existingSeed: entry.seed?.seedNumber ?? null
+        })),
+        method
+      );
+
       await tx.seed.deleteMany({ where: { tournamentId: tournament.id } });
       for (const entrant of seededRegistrations) {
         await tx.seed.create({
@@ -307,18 +333,31 @@ export class AdminTournamentService {
         }
       });
 
-      await this.writeAuditLogTx(tx, {
+      const tournamentUpdateData: Prisma.TournamentUpdateInput = {
+        version: {
+          increment: 1
+        }
+      };
+
+      await tx.tournament.update({
+        where: { id: tournament.id },
+        data: tournamentUpdateData
+      });
+
+      await writeAuditLogTx(tx, {
         tournamentId: tournament.id,
         guildId: input.guildId,
         actorUserId: input.actorUserId,
         action: AuditAction.BRACKET_RESEEDED,
         targetType: "Tournament",
         targetId: tournament.id,
+        reason: sanitizeUserText(input.reason),
         metadataJson: {
           seedingMethod: method
         }
       });
     });
+    await this.bracketSyncTarget?.syncTournamentBracket(input.tournamentId);
   }
 
   public async disqualifyParticipant(input: ModerationInput) {
@@ -330,70 +369,38 @@ export class AdminTournamentService {
   }
 
   public async cancelTournament(input: SimpleTournamentActionInput & { reason: string }) {
-    const tournament = await this.requireTournament(input.tournamentId, input.guildId);
-    if (
-      tournament.status === TournamentStatus.CANCELLED ||
-      tournament.status === TournamentStatus.FINALIZED ||
-      tournament.status === TournamentStatus.ARCHIVED
-    ) {
-      throw new ConflictError("This tournament can no longer be cancelled.");
-    }
-
-    return prisma.$transaction(async (tx) => {
-      const updated = await tx.tournament.update({
-        where: { id: tournament.id },
-        data: {
-          status: TournamentStatus.CANCELLED
-        }
-      });
-
-      await this.writeAuditLogTx(tx, {
-        tournamentId: tournament.id,
-        guildId: input.guildId,
-        actorUserId: input.actorUserId,
-        action: AuditAction.TOURNAMENT_CANCELLED,
-        targetType: "Tournament",
-        targetId: tournament.id,
-        reason: sanitizeUserText(input.reason)
-      });
-
-      return updated;
+    const result = await this.transitionTournamentStatus({
+      guildId: input.guildId,
+      tournamentId: input.tournamentId,
+      actorUserId: input.actorUserId,
+      action: "CANCEL",
+      auditAction: AuditAction.TOURNAMENT_CANCELLED,
+      reason: sanitizeUserText(input.reason)
     });
+    await this.bracketSyncTarget?.syncTournamentBracket(input.tournamentId);
+    return result;
   }
 
   public async finalizeTournament(input: SimpleTournamentActionInput) {
-    const tournament = await this.requireTournament(input.tournamentId, input.guildId);
-    if (
-      tournament.status !== TournamentStatus.IN_PROGRESS &&
-      tournament.status !== TournamentStatus.PAUSED
-    ) {
-      throw new ConflictError("Only active tournaments can be finalized.");
-    }
-
-    return prisma.$transaction(async (tx) => {
-      const updated = await tx.tournament.update({
-        where: { id: tournament.id },
-        data: {
-          status: TournamentStatus.FINALIZED,
-          completedAt: new Date()
-        }
-      });
-
-      await this.writeAuditLogTx(tx, {
-        tournamentId: tournament.id,
-        guildId: input.guildId,
-        actorUserId: input.actorUserId,
-        action: AuditAction.TOURNAMENT_FINALIZED,
-        targetType: "Tournament",
-        targetId: tournament.id
-      });
-
-      return updated;
+    const result = await this.transitionTournamentStatus({
+      guildId: input.guildId,
+      tournamentId: input.tournamentId,
+      actorUserId: input.actorUserId,
+      action: "FINALIZE",
+      auditAction: AuditAction.TOURNAMENT_FINALIZED,
+      additionalData: {
+        completedAt: new Date()
+      }
     });
+    await this.bracketSyncTarget?.syncTournamentBracket(input.tournamentId);
+    return result;
   }
 
   public async getTournamentSettings(input: SimpleTournamentActionInput) {
-    const tournament = await this.requireTournamentWithRelations(input.tournamentId, input.guildId);
+    const tournament = await this.tournamentRepository.getTournament(input.tournamentId);
+    if (!tournament || tournament.guildId !== input.guildId) {
+      throw new NotFoundError("Tournament not found.");
+    }
     return tournament;
   }
 
@@ -402,26 +409,37 @@ export class AdminTournamentService {
     status: RegistrationStatus,
     action: AuditAction
   ) {
-    const tournament = await this.requireTournamentWithRelations(input.tournamentId, input.guildId);
-    if (
-      tournament.status === TournamentStatus.CANCELLED ||
-      tournament.status === TournamentStatus.FINALIZED ||
-      tournament.status === TournamentStatus.ARCHIVED
-    ) {
-      throw new ConflictError("Participants cannot be moderated in this tournament state.");
-    }
-
-    const registration = tournament.registrations.find(
-      (entry) =>
-        entry.participant.discordUserId === input.targetUserId &&
-        entry.status === RegistrationStatus.ACTIVE
-    );
-
-    if (!registration) {
-      throw new NotFoundError("Active participant not found in this tournament.");
-    }
-
     await prisma.$transaction(async (tx) => {
+      await lockTournamentTx(tx, input.tournamentId);
+      const tournament = await this.loadTournamentWithRelationsTx(tx, input.tournamentId, input.guildId);
+
+      if (
+        tournament.status === TournamentStatus.CANCELLED ||
+        tournament.status === TournamentStatus.FINALIZED ||
+        tournament.status === TournamentStatus.ARCHIVED
+      ) {
+        throw new ConflictError("Participants cannot be moderated in this tournament state.");
+      }
+
+      if (
+        tournament.status === TournamentStatus.IN_PROGRESS ||
+        tournament.status === TournamentStatus.PAUSED
+      ) {
+        throw new ConflictError(
+          "Participant moderation is blocked after the bracket starts until a bracket-aware moderation flow is implemented."
+        );
+      }
+
+      const registration = tournament.registrations.find(
+        (entry) =>
+          entry.participant.discordUserId === input.targetUserId &&
+          entry.status === RegistrationStatus.ACTIVE
+      );
+
+      if (!registration) {
+        throw new NotFoundError("Active participant not found in this tournament.");
+      }
+
       await tx.registration.update({
         where: { id: registration.id },
         data:
@@ -436,7 +454,18 @@ export class AdminTournamentService {
               }
       });
 
-      await this.writeAuditLogTx(tx, {
+      const tournamentUpdateData: Prisma.TournamentUpdateInput = {
+        version: {
+          increment: 1
+        }
+      };
+
+      await tx.tournament.update({
+        where: { id: tournament.id },
+        data: tournamentUpdateData
+      });
+
+      await writeAuditLogTx(tx, {
         tournamentId: tournament.id,
         guildId: input.guildId,
         actorUserId: input.actorUserId,
@@ -446,6 +475,7 @@ export class AdminTournamentService {
         reason: sanitizeUserText(input.reason)
       });
     });
+    await this.bracketSyncTarget?.syncTournamentBracket(input.tournamentId);
   }
 
   private seedRegistrations(
@@ -573,64 +603,149 @@ export class AdminTournamentService {
     }
   }
 
-  private async updateTournamentStatus(
-    tournamentId: string,
-    guildId: string,
-    actorUserId: string,
-    status: TournamentStatus,
-    action: AuditAction
-  ) {
+  private async transitionTournamentStatus(args: {
+    guildId: string;
+    tournamentId: string;
+    actorUserId: string;
+    action?: DomainTournamentAction;
+    resolveAction?: (status: TournamentStatus) => DomainTournamentAction;
+    auditAction: AuditAction;
+    reason?: string;
+    additionalData?: Prisma.TournamentUpdateInput;
+  }) {
     return prisma.$transaction(async (tx) => {
+      await lockTournamentTx(tx, args.tournamentId);
+      const tournament = await this.loadTournamentTx(tx, args.tournamentId, args.guildId);
+      const action =
+        args.action ?? args.resolveAction?.(tournament.status);
+
+      if (!action) {
+        throw new ConflictError("No lifecycle action could be resolved for this tournament state.");
+      }
+
+      const nextStatus = this.resolveNextStatus(
+        tournament.status,
+        action,
+        this.buildTransitionContext(tournament, 0)
+      );
+
+      const data: Prisma.TournamentUpdateInput = {
+        status: nextStatus,
+        version: {
+          increment: 1
+        },
+        ...args.additionalData
+      };
+
       const updated = await tx.tournament.update({
-        where: { id: tournamentId },
-        data: { status }
+        where: { id: tournament.id },
+        data
       });
 
-      await this.writeAuditLogTx(tx, {
-        tournamentId,
-        guildId,
-        actorUserId,
-        action,
+      await writeAuditLogTx(tx, {
+        tournamentId: tournament.id,
+        guildId: args.guildId,
+        actorUserId: args.actorUserId,
+        action: args.auditAction,
         targetType: "Tournament",
-        targetId: tournamentId
+        targetId: tournament.id,
+        reason: args.reason
       });
 
       return updated;
     });
   }
 
-  private async requireTournament(tournamentId: string, guildId: string) {
-    const tournament = await prisma.tournament.findUnique({
-      where: { id: tournamentId },
-      include: { settings: true }
-    });
-    if (!tournament || tournament.guildId !== guildId) {
-      throw new NotFoundError("Tournament not found.");
-    }
-    return tournament;
+  private buildTransitionContext(
+    tournament: {
+      requireCheckIn: boolean;
+      brackets: Array<{ id: string }>;
+    },
+    eligibleParticipantCount: number
+  ): TournamentStateContext {
+    return {
+      requireCheckIn: tournament.requireCheckIn,
+      eligibleParticipantCount,
+      bracketGenerated: tournament.brackets.length > 0,
+      canReopenRegistration: true
+    };
   }
 
-  private async requireTournamentWithRelations(tournamentId: string, guildId: string) {
-    const tournament = await this.tournamentRepository.getTournament(tournamentId);
-    if (!tournament || tournament.guildId !== guildId) {
-      throw new NotFoundError("Tournament not found.");
-    }
-    return tournament;
+  private resolveNextStatus(
+    current: TournamentStatus,
+    action: DomainTournamentAction,
+    context: TournamentStateContext
+  ): TournamentStatus {
+    return this.stateMachine.transition(
+      current as DomainTournamentStatus,
+      action,
+      context
+    ).to as TournamentStatus;
   }
 
-  private async writeAuditLogTx(
+  private async loadTournamentTx(
     tx: Prisma.TransactionClient,
-    args: {
-      tournamentId: string;
-      guildId: string;
-      actorUserId: string;
-      action: AuditAction;
-      targetType: string;
-      targetId: string;
-      reason?: string;
-      metadataJson?: Prisma.JsonObject;
-    }
+    tournamentId: string,
+    guildId: string
   ) {
-    await tx.auditLog.create({ data: args });
+    const tournament = await tx.tournament.findUnique({
+      where: { id: tournamentId },
+      include: {
+        settings: true,
+        brackets: {
+          select: { id: true }
+        }
+      }
+    });
+
+    if (!tournament || tournament.guildId !== guildId) {
+      throw new NotFoundError("Tournament not found.");
+    }
+
+    return tournament;
+  }
+
+  private async loadTournamentWithRelationsTx(
+    tx: Prisma.TransactionClient,
+    tournamentId: string,
+    guildId: string
+  ): Promise<TournamentWithRelations> {
+    const tournament = await tx.tournament.findUnique({
+      where: { id: tournamentId },
+      include: {
+        settings: true,
+        registrations: {
+          include: { participant: true, seed: true, checkIn: true },
+          orderBy: [{ seed: { seedNumber: "asc" } }, { joinedAt: "asc" }]
+        },
+        brackets: {
+          include: {
+            rounds: {
+              include: {
+                matches: {
+                  include: { reports: true, games: true },
+                  orderBy: { sequence: "asc" }
+                }
+              },
+              orderBy: { roundNumber: "asc" }
+            }
+          }
+        },
+        waitlistEntries: {
+          include: { participant: true },
+          orderBy: { position: "asc" }
+        },
+        auditLogs: {
+          orderBy: { createdAt: "desc" },
+          take: 50
+        }
+      }
+    });
+
+    if (!tournament || tournament.guildId !== guildId) {
+      throw new NotFoundError("Tournament not found.");
+    }
+
+    return tournament;
   }
 }

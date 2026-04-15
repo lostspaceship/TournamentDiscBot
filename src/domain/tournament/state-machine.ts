@@ -59,8 +59,10 @@ export class TournamentStateMachine {
 
       case "START":
         this.assert(
-          current === "REGISTRATION_CLOSED" || current === "CHECK_IN",
-          "Tournament can only start after registration is closed."
+          current === "REGISTRATION_OPEN" ||
+            current === "REGISTRATION_CLOSED" ||
+            current === "CHECK_IN",
+          "Tournament can only start while registration is open, closed, or in check-in."
         );
         this.assert(
           context.eligibleParticipantCount >= 2,

@@ -13,10 +13,15 @@ import { GuildConfigRepository } from "./repositories/guild-config-repository.js
 import { LoggerPermissionAuditHook } from "./permissions/audit.js";
 import { PermissionService } from "./permissions/service.js";
 import { AdminTournamentService } from "./services/admin-tournament-service.js";
+import { BracketImageRenderer } from "./renderers/bracket-image-renderer.js";
+import { BracketSyncService } from "./services/bracket-sync-service.js";
+import { InteractionGuard } from "./services/interaction-guard.js";
 import { MatchReportingService } from "./services/match-reporting-service.js";
 import { RegistrationService } from "./services/registration-service.js";
+import { ViewingService } from "./services/viewing-service.js";
+import { tournamentViewHandler } from "./interactions/tournament-view-handler.js";
 
-const runtime = {
+const runtime: BootstrapContext["runtime"] = {
   startedAt: new Date(),
   readyAt: null,
   isShuttingDown: false
@@ -24,7 +29,6 @@ const runtime = {
 
 const client = createDiscordClient();
 const commands = loadCommands();
-const interactionHandlers: BootstrapContext["interactionHandlers"] = [];
 const tournamentRepository = new TournamentRepository();
 const guildConfigRepository = new GuildConfigRepository();
 const permissionService = new PermissionService(
@@ -32,12 +36,23 @@ const permissionService = new PermissionService(
   tournamentRepository,
   new LoggerPermissionAuditHook()
 );
+const interactionGuard = new InteractionGuard();
+const bracketSyncService = new BracketSyncService(
+  client,
+  logger,
+  tournamentRepository,
+  guildConfigRepository,
+  new BracketImageRenderer()
+);
 const adminTournamentService = new AdminTournamentService(
   guildConfigRepository,
-  tournamentRepository
+  tournamentRepository,
+  bracketSyncService
 );
-const registrationService = new RegistrationService(tournamentRepository);
-const matchReportingService = new MatchReportingService(tournamentRepository);
+const registrationService = new RegistrationService(tournamentRepository, bracketSyncService);
+const matchReportingService = new MatchReportingService(tournamentRepository, bracketSyncService);
+const viewingService = new ViewingService(tournamentRepository);
+const interactionHandlers: BootstrapContext["interactionHandlers"] = [tournamentViewHandler];
 const healthServer = createHealthServer({
   logger,
   runtime,
@@ -52,16 +67,19 @@ const context: BootstrapContext = {
   runtime,
   healthServer,
   permissionService,
+  interactionGuard,
+  bracketSyncService,
   adminTournamentService,
   registrationService,
-  matchReportingService
+  matchReportingService,
+  viewingService
 };
 
 registerGlobalErrorHandlers(context);
 
 await runStartupChecks();
 
-client.once("ready", () => {
+client.once("clientReady", () => {
   runtime.readyAt = new Date();
   logger.info(
     {

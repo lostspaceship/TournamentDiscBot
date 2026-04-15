@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import { DomainValidationError } from "../errors.js";
 import type { Entrant, SeededEntrant, SeedingMethod } from "./types.js";
 
@@ -7,7 +9,8 @@ export interface SeedParticipantsOptions {
 }
 
 const nextRandom = (seed: string) => {
-  let state = BigInt(`0x${seed.padEnd(16, "0").slice(0, 16)}`);
+  const normalizedSeed = createHash("sha256").update(seed).digest("hex").slice(0, 16);
+  let state = BigInt(`0x${normalizedSeed}`);
   return () => {
     state ^= state << 13n;
     state ^= state >> 7n;

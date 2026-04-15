@@ -98,6 +98,7 @@ enum AuditAction {
   RESULT_DISPUTED
   RESULT_OVERRIDDEN
   MATCH_ADVANCED
+  MANUAL_ADVANCE
   STAFF_OVERRIDE
 }
 
@@ -145,10 +146,14 @@ model Tournament {
   allowWaitlist      Boolean             @default(true)
   mutualExclusionKey String?
   bestOfDefault      Int                 @default(3)
+  bracketMessageChannelId String?
+  bracketMessageId   String?
+  bracketImageUpdatedAt DateTime?
   startsAt           DateTime?
   startedAt          DateTime?
   completedAt        DateTime?
   archivedAt         DateTime?
+  version            Int                 @default(1)
   createdAt          DateTime            @default(now())
   updatedAt          DateTime            @updatedAt
   guildConfig        GuildConfig         @relation(fields: [guildConfigId], references: [id], onDelete: Cascade)
@@ -164,6 +169,7 @@ model Tournament {
 
   @@index([guildId, status])
   @@index([guildConfigId])
+  @@index([mutualExclusionKey])
 }
 
 model TournamentSettings {
@@ -286,6 +292,7 @@ model Match {
 
   @@index([tournamentId, status])
   @@index([roundId, sequence])
+  @@unique([roundId, sequence])
 }
 
 model MatchGame {
@@ -321,6 +328,7 @@ model ResultReport {
   match                Match            @relation(fields: [matchId], references: [id], onDelete: Cascade)
 
   @@index([matchId, status])
+  @@index([tournamentId, createdAt])
 }
 
 model AuditLog {
@@ -363,4 +371,5 @@ model WaitlistEntry {
 
   @@unique([tournamentId, participantId])
   @@unique([tournamentId, position])
+  @@index([tournamentId, position])
 }

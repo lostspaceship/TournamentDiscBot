@@ -6,13 +6,16 @@ import type {
   SlashCommandBuilder,
   SlashCommandSubcommandsOnlyBuilder
 } from "discord.js";
-import type { FastifyInstance } from "fastify";
 import type pino from "pino";
 
+import type { createHealthServer } from "../http/health.js";
 import type { PermissionService } from "../permissions/service.js";
 import type { AdminTournamentService } from "../services/admin-tournament-service.js";
+import type { BracketSyncService } from "../services/bracket-sync-service.js";
+import type { InteractionGuard } from "../services/interaction-guard.js";
 import type { MatchReportingService } from "../services/match-reporting-service.js";
 import type { RegistrationService } from "../services/registration-service.js";
+import type { ViewingService } from "../services/viewing-service.js";
 
 export interface RuntimeState {
   startedAt: Date;
@@ -38,9 +41,12 @@ export interface BootstrapContext {
   commands: Map<string, CommandModule>;
   interactionHandlers: InteractionHandlerModule[];
   runtime: RuntimeState;
-  healthServer: FastifyInstance;
+  healthServer: ReturnType<typeof createHealthServer>;
   permissionService: PermissionService;
+  interactionGuard: InteractionGuard;
+  bracketSyncService: BracketSyncService;
   adminTournamentService: AdminTournamentService;
   registrationService: RegistrationService;
   matchReportingService: MatchReportingService;
+  viewingService: ViewingService;
 }

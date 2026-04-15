@@ -1,6 +1,7 @@
 import type { CacheType, ChatInputCommandInteraction, Interaction } from "discord.js";
 
 import type { BootstrapContext } from "./types.js";
+import { AppError } from "../utils/errors.js";
 
 const replySafe = async (
   interaction: ChatInputCommandInteraction<CacheType>,
@@ -29,6 +30,8 @@ export const routeInteraction = async (
       return;
     }
 
+    context.interactionGuard.assertProcessable(interaction);
+
     if (interaction.isChatInputCommand()) {
       const command = context.commands.get(interaction.commandName);
       if (!command) {
@@ -47,11 +50,18 @@ export const routeInteraction = async (
       }
     }
   } catch (error) {
+    const message =
+      error instanceof AppError
+        ? error.safeMessage
+        : "An unexpected error occurred while handling this interaction.";
+
     context.logger.error(
       {
         error,
         interactionId: interaction.id,
-        interactionType: interaction.type
+        interactionType: interaction.type,
+        guildId: interaction.guildId,
+        userId: interaction.user?.id
       },
       "Interaction handling failed"
     );
@@ -59,12 +69,12 @@ export const routeInteraction = async (
     if (interaction.isRepliable()) {
       if (interaction.replied || interaction.deferred) {
         await interaction.followUp({
-          content: "An unexpected error occurred while handling this interaction.",
+          content: message,
           ephemeral: true
         });
       } else {
         await interaction.reply({
-          content: "An unexpected error occurred while handling this interaction.",
+          content: message,
           ephemeral: true
         });
       }

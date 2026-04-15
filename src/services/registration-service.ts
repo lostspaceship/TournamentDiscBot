@@ -9,6 +9,12 @@ import {
 
 import { prisma } from "../config/prisma.js";
 import { TournamentRepository } from "../repositories/tournament-repository.js";
+import {
+  lockTournamentTx,
+  mapUniqueConstraintError,
+  writeAuditLogTx
+} from "./support/transaction-utils.js";
+import type { BracketSyncTarget } from "./support/bracket-sync-target.js";
 import { ConflictError, NotFoundError } from "../utils/errors.js";
 import { sanitizeUserText } from "../utils/sanitize.js";
 
@@ -38,162 +44,175 @@ export interface JoinTournamentResult {
 }
 
 export class RegistrationService {
-  public constructor(private readonly tournamentRepository: TournamentRepository) {}
+  public constructor(
+    private readonly tournamentRepository: TournamentRepository,
+    private readonly bracketSyncTarget?: BracketSyncTarget
+  ) {}
 
   public async joinTournament(input: JoinTournamentInput): Promise<JoinTournamentResult> {
-    return prisma.$transaction(async (tx) => {
-      const tournament = await tx.tournament.findUnique({
-        where: { id: input.tournamentId },
-        include: {
-          settings: true,
-          registrations: {
-            include: { participant: true }
-          },
-          waitlistEntries: {
-            include: { participant: true },
-            orderBy: { position: "asc" }
-          }
-        }
-      });
+    try {
+      const result = await prisma.$transaction(async (tx) => {
+        await lockTournamentTx(tx, input.tournamentId);
 
-      if (!tournament || tournament.guildId !== input.guildId) {
-        throw new NotFoundError("Tournament not found.");
-      }
-
-      if (tournament.status !== TournamentStatus.REGISTRATION_OPEN) {
-        throw new ConflictError("This tournament is not currently accepting registrations.");
-      }
-
-      const participant = await tx.participant.upsert({
-        where: {
-          guildId_discordUserId: {
-            guildId: input.guildId,
-            discordUserId: input.actorUserId
-          }
-        },
-        update: {
-          displayName: sanitizeUserText(input.displayName, 80)
-        },
-        create: {
-          guildId: input.guildId,
-          discordUserId: input.actorUserId,
-          displayName: sanitizeUserText(input.displayName, 80)
-        }
-      });
-
-      const duplicateRegistration = tournament.registrations.find(
-        (entry) =>
-          entry.participantId === participant.id &&
-          (entry.status === RegistrationStatus.ACTIVE ||
-            entry.status === RegistrationStatus.WAITLISTED)
-      );
-      if (duplicateRegistration) {
-        throw new ConflictError("You are already registered for this tournament.");
-      }
-
-      const duplicateWaitlist = tournament.waitlistEntries.find(
-        (entry) => entry.participantId === participant.id
-      );
-      if (duplicateWaitlist) {
-        throw new ConflictError("You are already on the waitlist for this tournament.");
-      }
-
-      if (tournament.mutualExclusionKey) {
-        const conflicting = await tx.registration.findFirst({
-          where: {
-            participantId: participant.id,
-            tournamentId: { not: tournament.id },
-            status: RegistrationStatus.ACTIVE,
-            tournament: {
-              guildId: input.guildId,
-              mutualExclusionKey: tournament.mutualExclusionKey,
-              status: {
-                in: [
-                  TournamentStatus.REGISTRATION_OPEN,
-                  TournamentStatus.REGISTRATION_CLOSED,
-                  TournamentStatus.CHECK_IN,
-                  TournamentStatus.IN_PROGRESS,
-                  TournamentStatus.PAUSED
-                ]
-              }
+        const tournament = await tx.tournament.findUnique({
+          where: { id: input.tournamentId },
+          include: {
+            settings: true,
+            registrations: {
+              include: { participant: true }
+            },
+            waitlistEntries: {
+              include: { participant: true },
+              orderBy: { position: "asc" }
             }
           }
         });
 
-        if (conflicting) {
-          throw new ConflictError("You are already entered in a mutually exclusive tournament.");
-        }
-      }
-
-      const activeCount = tournament.registrations.filter(
-        (entry) => entry.status === RegistrationStatus.ACTIVE
-      ).length;
-      const isFull = activeCount >= tournament.maxParticipants;
-
-      if (isFull) {
-        if (!tournament.allowWaitlist) {
-          throw new ConflictError("This tournament is full.");
+        if (!tournament || tournament.guildId !== input.guildId) {
+          throw new NotFoundError("Tournament not found.");
         }
 
-        const waitlistEntry = await tx.waitlistEntry.create({
-          data: {
-            tournamentId: tournament.id,
-            participantId: participant.id,
-            position: tournament.waitlistEntries.length + 1
+        if (tournament.status !== TournamentStatus.REGISTRATION_OPEN) {
+          throw new ConflictError("This tournament is not currently accepting registrations.");
+        }
+
+        const participant = await tx.participant.upsert({
+          where: {
+            guildId_discordUserId: {
+              guildId: input.guildId,
+              discordUserId: input.actorUserId
+            }
+          },
+          update: {
+            displayName: sanitizeUserText(input.displayName, 80)
+          },
+          create: {
+            guildId: input.guildId,
+            discordUserId: input.actorUserId,
+            displayName: sanitizeUserText(input.displayName, 80)
           }
         });
 
-        await this.writeAuditLogTx(tx, {
+        const duplicateRegistration = tournament.registrations.find(
+          (entry) =>
+            entry.participantId === participant.id &&
+            (entry.status === RegistrationStatus.ACTIVE ||
+              entry.status === RegistrationStatus.WAITLISTED)
+        );
+        if (duplicateRegistration) {
+          throw new ConflictError("You are already registered for this tournament.");
+        }
+
+        const duplicateWaitlist = tournament.waitlistEntries.find(
+          (entry) => entry.participantId === participant.id
+        );
+        if (duplicateWaitlist) {
+          throw new ConflictError("You are already on the waitlist for this tournament.");
+        }
+
+        if (tournament.mutualExclusionKey) {
+          const conflicting = await tx.registration.findFirst({
+            where: {
+              participantId: participant.id,
+              tournamentId: { not: tournament.id },
+              status: RegistrationStatus.ACTIVE,
+              tournament: {
+                guildId: input.guildId,
+                mutualExclusionKey: tournament.mutualExclusionKey,
+                status: {
+                  in: [
+                    TournamentStatus.REGISTRATION_OPEN,
+                    TournamentStatus.REGISTRATION_CLOSED,
+                    TournamentStatus.CHECK_IN,
+                    TournamentStatus.IN_PROGRESS,
+                    TournamentStatus.PAUSED
+                  ]
+                }
+              }
+            }
+          });
+
+          if (conflicting) {
+            throw new ConflictError("You are already entered in a mutually exclusive tournament.");
+          }
+        }
+
+        const activeCount = tournament.registrations.filter(
+          (entry) => entry.status === RegistrationStatus.ACTIVE
+        ).length;
+        const isFull = activeCount >= tournament.maxParticipants;
+
+        if (isFull) {
+          if (!tournament.allowWaitlist) {
+            throw new ConflictError("This tournament is full.");
+          }
+
+          const waitlistEntry = await tx.waitlistEntry.create({
+            data: {
+              tournamentId: tournament.id,
+              participantId: participant.id,
+              position: tournament.waitlistEntries.length + 1
+            }
+          });
+
+          await writeAuditLogTx(tx, {
+            tournamentId: tournament.id,
+            guildId: input.guildId,
+            actorUserId: input.actorUserId,
+            action: AuditAction.PARTICIPANT_JOINED,
+            targetType: "WaitlistEntry",
+            targetId: waitlistEntry.id,
+            metadataJson: {
+              mode: "WAITLIST",
+              position: waitlistEntry.position
+            }
+          });
+
+          return {
+            waitlisted: true,
+            waitlistPosition: waitlistEntry.position
+          };
+        }
+
+        const registration = await tx.registration.create({
+          data: {
+            tournamentId: tournament.id,
+            participantId: participant.id,
+            registrationKey: crypto
+              .createHash("sha256")
+              .update(`${tournament.id}:${participant.id}`)
+              .digest("hex")
+          }
+        });
+
+        await writeAuditLogTx(tx, {
           tournamentId: tournament.id,
           guildId: input.guildId,
           actorUserId: input.actorUserId,
           action: AuditAction.PARTICIPANT_JOINED,
-          targetType: "WaitlistEntry",
-          targetId: waitlistEntry.id,
+          targetType: "Registration",
+          targetId: registration.id,
           metadataJson: {
-            mode: "WAITLIST",
-            position: waitlistEntry.position
+            mode: "ACTIVE"
           }
         });
 
         return {
-          waitlisted: true,
-          waitlistPosition: waitlistEntry.position
+          registrationId: registration.id,
+          waitlisted: false
         };
-      }
-
-      const registration = await tx.registration.create({
-        data: {
-          tournamentId: tournament.id,
-          participantId: participant.id,
-          registrationKey: crypto
-            .createHash("sha256")
-            .update(`${tournament.id}:${participant.id}`)
-            .digest("hex")
-        }
       });
-
-      await this.writeAuditLogTx(tx, {
-        tournamentId: tournament.id,
-        guildId: input.guildId,
-        actorUserId: input.actorUserId,
-        action: AuditAction.PARTICIPANT_JOINED,
-        targetType: "Registration",
-        targetId: registration.id,
-        metadataJson: {
-          mode: "ACTIVE"
-        }
-      });
-
-      return {
-        registrationId: registration.id,
-        waitlisted: false
-      };
-    });
+      await this.bracketSyncTarget?.syncTournamentBracket(input.tournamentId);
+      return result;
+    } catch (error) {
+      throw mapUniqueConstraintError(error, "You are already registered for this tournament.");
+    }
   }
 
   public async leaveTournament(input: LeaveTournamentInput): Promise<{ leftWaitlist: boolean }> {
-    return prisma.$transaction(async (tx) => {
+    const result = await prisma.$transaction(async (tx) => {
+      await lockTournamentTx(tx, input.tournamentId);
+
       const tournament = await tx.tournament.findUnique({
         where: { id: input.tournamentId },
         include: {
@@ -234,7 +253,7 @@ export class RegistrationService {
           }
         }
 
-        await this.writeAuditLogTx(tx, {
+        await writeAuditLogTx(tx, {
           tournamentId: tournament.id,
           guildId: input.guildId,
           actorUserId: input.actorUserId,
@@ -273,7 +292,7 @@ export class RegistrationService {
         }
       });
 
-      await this.writeAuditLogTx(tx, {
+      await writeAuditLogTx(tx, {
         tournamentId: tournament.id,
         guildId: input.guildId,
         actorUserId: input.actorUserId,
@@ -285,77 +304,67 @@ export class RegistrationService {
 
       return { leftWaitlist: false };
     });
+    await this.bracketSyncTarget?.syncTournamentBracket(input.tournamentId);
+    return result;
   }
 
   public async checkIn(input: CheckInTournamentInput): Promise<{ registrationId: string }> {
-    return prisma.$transaction(async (tx) => {
-      const tournament = await tx.tournament.findUnique({
-        where: { id: input.tournamentId },
-        include: {
-          registrations: {
-            include: { participant: true, checkIn: true }
+    try {
+      return await prisma.$transaction(async (tx) => {
+        await lockTournamentTx(tx, input.tournamentId);
+
+        const tournament = await tx.tournament.findUnique({
+          where: { id: input.tournamentId },
+          include: {
+            registrations: {
+              include: { participant: true, checkIn: true }
+            }
           }
+        });
+
+        if (!tournament || tournament.guildId !== input.guildId) {
+          throw new NotFoundError("Tournament not found.");
         }
-      });
 
-      if (!tournament || tournament.guildId !== input.guildId) {
-        throw new NotFoundError("Tournament not found.");
-      }
+        if (tournament.status !== TournamentStatus.CHECK_IN) {
+          throw new ConflictError("Check-in is not currently open for this tournament.");
+        }
 
-      if (tournament.status !== TournamentStatus.CHECK_IN) {
-        throw new ConflictError("Check-in is not currently open for this tournament.");
-      }
+        const registration = tournament.registrations.find(
+          (entry) =>
+            entry.participant.discordUserId === input.actorUserId &&
+            entry.status === RegistrationStatus.ACTIVE
+        );
 
-      const registration = tournament.registrations.find(
-        (entry) =>
-          entry.participant.discordUserId === input.actorUserId &&
-          entry.status === RegistrationStatus.ACTIVE
-      );
+        if (!registration) {
+          throw new NotFoundError("You are not an active participant in this tournament.");
+        }
 
-      if (!registration) {
-        throw new NotFoundError("You are not an active participant in this tournament.");
-      }
+        if (registration.checkIn) {
+          throw new ConflictError("You have already checked in.");
+        }
 
-      if (registration.checkIn) {
-        throw new ConflictError("You have already checked in.");
-      }
+        await tx.checkIn.create({
+          data: {
+            tournamentId: tournament.id,
+            registrationId: registration.id,
+            participantId: registration.participantId
+          }
+        });
 
-      await tx.checkIn.create({
-        data: {
+        await writeAuditLogTx(tx, {
           tournamentId: tournament.id,
-          registrationId: registration.id,
-          participantId: registration.participantId
-        }
+          guildId: input.guildId,
+          actorUserId: input.actorUserId,
+          action: AuditAction.PARTICIPANT_CHECKED_IN,
+          targetType: "Registration",
+          targetId: registration.id
+        });
+
+        return { registrationId: registration.id };
       });
-
-      await this.writeAuditLogTx(tx, {
-        tournamentId: tournament.id,
-        guildId: input.guildId,
-        actorUserId: input.actorUserId,
-        action: AuditAction.PARTICIPANT_CHECKED_IN,
-        targetType: "Registration",
-        targetId: registration.id
-      });
-
-      return { registrationId: registration.id };
-    });
-  }
-
-  private async writeAuditLogTx(
-    tx: Prisma.TransactionClient,
-    args: {
-      tournamentId: string;
-      guildId: string;
-      actorUserId: string;
-      action: AuditAction;
-      targetType: string;
-      targetId: string;
-      reason?: string;
-      metadataJson?: Prisma.JsonObject;
+    } catch (error) {
+      throw mapUniqueConstraintError(error, "You have already checked in.");
     }
-  ): Promise<void> {
-    await tx.auditLog.create({
-      data: args
-    });
   }
 }

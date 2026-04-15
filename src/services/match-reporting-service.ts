@@ -1,11 +1,9 @@
 import {
   AuditAction,
-  BracketType,
   MatchOutcomeType,
   MatchStatus,
   Prisma,
   RegistrationStatus,
-  TournamentFormat,
   TournamentStatus
 } from "@prisma/client";
 
@@ -14,10 +12,21 @@ import { BracketEngineFactory } from "../domain/bracket/engine.js";
 import type {
   BracketSnapshot,
   MatchNode,
-  ReportMatchOutcomeInput,
-  RoundNode
+  ReportMatchOutcomeInput
 } from "../domain/bracket/types.js";
 import { TournamentRepository } from "../repositories/tournament-repository.js";
+import {
+  buildPersistedSnapshotFromTournament,
+  type TournamentWithBracketData
+} from "./support/bracket-snapshot.js";
+import type { BracketSyncTarget } from "./support/bracket-sync-target.js";
+import {
+  lockMatchTx,
+  lockTournamentTx,
+  mapUniqueConstraintError,
+  type TransactionClient,
+  writeAuditLogTx
+} from "./support/transaction-utils.js";
 import { ConflictError, NotFoundError, ValidationError } from "../utils/errors.js";
 import { sanitizeUserText } from "../utils/sanitize.js";
 
@@ -55,8 +64,14 @@ interface OverrideResultInput extends ReportResultInput {
   reason: string;
 }
 
-type TournamentWithRelations = NonNullable<Awaited<ReturnType<TournamentRepository["getTournament"]>>>;
-type TransactionClient = Prisma.TransactionClient;
+interface ManualAdvanceInput extends MatchActionInput {
+  matchId: string;
+  winnerRegistrationId: string;
+  reason: string;
+  idempotencyKey: string;
+}
+
+type TournamentWithRelations = TournamentWithBracketData;
 type PersistedReport = {
   id: string;
   matchId: string;
@@ -65,7 +80,10 @@ type PersistedReport = {
 };
 
 export class MatchReportingService {
-  public constructor(private readonly tournamentRepository: TournamentRepository) {}
+  public constructor(
+    private readonly tournamentRepository: TournamentRepository,
+    private readonly bracketSyncTarget?: BracketSyncTarget
+  ) {}
 
   public async getMatchView(input: ViewMatchInput) {
     const tournament = await this.requireTournamentWithRelations(input.tournamentId, input.guildId);
@@ -127,78 +145,87 @@ export class MatchReportingService {
   }
 
   public async reportResult(input: ReportResultInput) {
-    return prisma.$transaction(async (tx) => {
-      const tournament = await this.loadTournamentTx(tx, input.tournamentId, input.guildId);
-      const actorRegistration = this.findActorRegistration(tournament, input.actorUserId, true);
-      const match = this.requireMatchRecord(tournament, input.matchId);
+    try {
+      return await prisma.$transaction(async (tx) => {
+        await lockTournamentTx(tx, input.tournamentId);
+        await lockMatchTx(tx, input.matchId);
 
-      this.validateTournamentIsActive(tournament);
-      this.validateMatchReportable(match);
-      this.validateActorAssignedToMatch(match, actorRegistration.id);
-      this.validateEntrantsForMatch(match, input.winnerRegistrationId, input.loserRegistrationId);
-      this.validateOutcomeAndScores(match.bestOf, input);
-      this.ensureNoPendingReport(match);
+        const tournament = await this.loadTournamentTx(tx, input.tournamentId, input.guildId);
+        const actorRegistration = this.findActorRegistration(tournament, input.actorUserId, true);
+        const match = this.requireMatchRecord(tournament, input.matchId);
 
-      const createdReport = await tx.resultReport.create({
-        data: {
+        this.validateTournamentIsActive(tournament);
+        this.validateMatchReportable(match);
+        this.validateActorAssignedToMatch(match, actorRegistration.id);
+        this.validateEntrantsForMatch(match, input.winnerRegistrationId, input.loserRegistrationId);
+        this.validateOutcomeAndScores(match.bestOf, input);
+        this.ensureNoPendingReport(match);
+
+        const createdReport = await tx.resultReport.create({
+          data: {
+            tournamentId: tournament.id,
+            matchId: match.id,
+            submittedByUserId: input.actorUserId,
+            reporterRegistrationId: actorRegistration.id,
+            proposedWinnerRegistrationId: input.winnerRegistrationId,
+            outcomeType: input.outcomeType,
+            player1Score: this.scoreForPlayerSlot(match, input, 1),
+            player2Score: this.scoreForPlayerSlot(match, input, 2),
+            status: MatchStatus.AWAITING_CONFIRMATION,
+            reason: input.reason ? sanitizeUserText(input.reason) : null,
+            idempotencyKey: input.idempotencyKey
+          }
+        });
+
+        const updatedMatch = await tx.match.updateMany({
+          where: {
+            id: match.id,
+            version: match.version,
+            status: { in: [MatchStatus.READY, MatchStatus.DISPUTED] }
+          },
+          data: {
+            status: MatchStatus.AWAITING_CONFIRMATION,
+            version: { increment: 1 }
+          }
+        });
+
+        if (updatedMatch.count !== 1) {
+          throw new ConflictError("This match changed while your report was being submitted.");
+        }
+
+        await writeAuditLogTx(tx, {
           tournamentId: tournament.id,
-          matchId: match.id,
-          submittedByUserId: input.actorUserId,
-          reporterRegistrationId: actorRegistration.id,
-          proposedWinnerRegistrationId: input.winnerRegistrationId,
-          outcomeType: input.outcomeType,
-          player1Score: this.scoreForPlayerSlot(match, input, 1),
-          player2Score: this.scoreForPlayerSlot(match, input, 2),
-          status: MatchStatus.AWAITING_CONFIRMATION,
-          reason: input.reason ? sanitizeUserText(input.reason) : null,
-          idempotencyKey: input.idempotencyKey
-        }
+          guildId: input.guildId,
+          actorUserId: input.actorUserId,
+          action: AuditAction.RESULT_REPORTED,
+          targetType: "ResultReport",
+          targetId: createdReport.id,
+          reason: input.reason ? sanitizeUserText(input.reason) : undefined,
+          metadataJson: {
+            matchId: match.id,
+            outcomeType: input.outcomeType,
+            winnerRegistrationId: input.winnerRegistrationId,
+            loserRegistrationId: input.loserRegistrationId
+          }
+        });
+
+        return {
+          reportId: createdReport.id,
+          matchId: match.id
+        };
       });
-
-      const updatedMatch = await tx.match.updateMany({
-        where: {
-          id: match.id,
-          version: match.version,
-          status: { in: [MatchStatus.READY, MatchStatus.DISPUTED] }
-        },
-        data: {
-          status: MatchStatus.AWAITING_CONFIRMATION,
-          version: { increment: 1 }
-        }
-      });
-
-      if (updatedMatch.count !== 1) {
-        throw new ConflictError("This match changed while your report was being submitted.");
-      }
-
-      await this.writeAuditLogTx(tx, {
-        tournamentId: tournament.id,
-        guildId: input.guildId,
-        actorUserId: input.actorUserId,
-        action: AuditAction.RESULT_REPORTED,
-        targetType: "ResultReport",
-        targetId: createdReport.id,
-        reason: input.reason ? sanitizeUserText(input.reason) : undefined,
-        metadataJson: {
-          matchId: match.id,
-          outcomeType: input.outcomeType,
-          winnerRegistrationId: input.winnerRegistrationId,
-          loserRegistrationId: input.loserRegistrationId
-        }
-      });
-
-      return {
-        reportId: createdReport.id,
-        matchId: match.id
-      };
-    });
+    } catch (error) {
+      throw mapUniqueConstraintError(error, "This result report was already processed.");
+    }
   }
 
   public async confirmResult(input: ConfirmResultInput) {
-    return prisma.$transaction(async (tx) => {
+    const result = await prisma.$transaction(async (tx) => {
+      await lockTournamentTx(tx, input.tournamentId);
       const tournament = await this.loadTournamentTx(tx, input.tournamentId, input.guildId);
       const actorRegistration = this.findActorRegistration(tournament, input.actorUserId, true);
       const report = this.requireReport(tournament, input.reportId);
+      await lockMatchTx(tx, report.matchId);
       const match = this.requireMatchRecord(tournament, report.matchId);
 
       this.validateTournamentIsActive(tournament);
@@ -244,13 +271,17 @@ export class MatchReportingService {
         auditReason: report.reason ?? undefined
       });
     });
+    await this.bracketSyncTarget?.syncTournamentBracket(input.tournamentId);
+    return result;
   }
 
   public async disputeResult(input: DisputeResultInput) {
     return prisma.$transaction(async (tx) => {
+      await lockTournamentTx(tx, input.tournamentId);
       const tournament = await this.loadTournamentTx(tx, input.tournamentId, input.guildId);
       const actorRegistration = this.findActorRegistration(tournament, input.actorUserId, true);
       const report = this.requireReport(tournament, input.reportId);
+      await lockMatchTx(tx, report.matchId);
       const match = this.requireMatchRecord(tournament, report.matchId);
 
       this.validateTournamentIsActive(tournament);
@@ -302,7 +333,7 @@ export class MatchReportingService {
         throw new ConflictError("This match changed while the dispute was being recorded.");
       }
 
-      await this.writeAuditLogTx(tx, {
+      await writeAuditLogTx(tx, {
         tournamentId: tournament.id,
         guildId: input.guildId,
         actorUserId: input.actorUserId,
@@ -323,38 +354,107 @@ export class MatchReportingService {
   }
 
   public async overrideResult(input: OverrideResultInput) {
-    return prisma.$transaction(async (tx) => {
-      const tournament = await this.loadTournamentTx(tx, input.tournamentId, input.guildId);
-      const match = this.requireMatchRecord(tournament, input.matchId);
+    try {
+      const result = await prisma.$transaction(async (tx) => {
+        await lockTournamentTx(tx, input.tournamentId);
+        await lockMatchTx(tx, input.matchId);
 
-      this.validateTournamentIsActive(tournament);
-      this.validateMatchReportableOrAwaiting(match);
-      this.validateEntrantsForMatch(match, input.winnerRegistrationId, input.loserRegistrationId);
-      this.validateOutcomeAndScores(match.bestOf, input);
+        const tournament = await this.loadTournamentTx(tx, input.tournamentId, input.guildId);
+        const match = this.requireMatchRecord(tournament, input.matchId);
 
-      const createdReport = await tx.resultReport.create({
-        data: {
-          tournamentId: tournament.id,
-          matchId: match.id,
-          submittedByUserId: input.actorUserId,
-          reporterRegistrationId: null,
-          proposedWinnerRegistrationId: input.winnerRegistrationId,
-          outcomeType: input.outcomeType,
-          player1Score: this.scoreForPlayerSlot(match, input, 1),
-          player2Score: this.scoreForPlayerSlot(match, input, 2),
-          status: MatchStatus.CONFIRMED,
-          reason: sanitizeUserText(input.reason),
-          confirmedByUserId: input.actorUserId,
-          idempotencyKey: input.idempotencyKey
+        this.validateTournamentIsActive(tournament);
+        this.validateMatchReportableOrAwaiting(match);
+        this.validateEntrantsForMatch(match, input.winnerRegistrationId, input.loserRegistrationId);
+        this.validateOutcomeAndScores(match.bestOf, input);
+
+        const createdReport = await tx.resultReport.create({
+          data: {
+            tournamentId: tournament.id,
+            matchId: match.id,
+            submittedByUserId: input.actorUserId,
+            reporterRegistrationId: null,
+            proposedWinnerRegistrationId: input.winnerRegistrationId,
+            outcomeType: input.outcomeType,
+            player1Score: this.scoreForPlayerSlot(match, input, 1),
+            player2Score: this.scoreForPlayerSlot(match, input, 2),
+            status: MatchStatus.CONFIRMED,
+            reason: sanitizeUserText(input.reason),
+            confirmedByUserId: input.actorUserId,
+            idempotencyKey: input.idempotencyKey
+          }
+        });
+
+        return this.applyConfirmedOutcomeTx(tx, tournament, match, createdReport, {
+          actorUserId: input.actorUserId,
+          auditAction: AuditAction.RESULT_OVERRIDDEN,
+          auditReason: sanitizeUserText(input.reason)
+        });
+      });
+      await this.bracketSyncTarget?.syncTournamentBracket(input.tournamentId);
+      return result;
+    } catch (error) {
+      throw mapUniqueConstraintError(error, "This override was already processed.");
+    }
+  }
+
+  public async manualAdvance(input: ManualAdvanceInput) {
+    try {
+      const result = await prisma.$transaction(async (tx) => {
+        await lockTournamentTx(tx, input.tournamentId);
+        await lockMatchTx(tx, input.matchId);
+
+        const tournament = await this.loadTournamentTx(tx, input.tournamentId, input.guildId);
+        const match = this.requireMatchRecord(tournament, input.matchId);
+
+        this.validateTournamentIsActive(tournament);
+        this.validateMatchReportableOrAwaiting(match);
+
+        const assignedRegistrations = [match.player1RegistrationId, match.player2RegistrationId].filter(
+          (entry): entry is string => entry != null
+        );
+
+        if (assignedRegistrations.length !== 2) {
+          throw new ConflictError("Manual advancement requires two assigned participants.");
         }
-      });
 
-      return this.applyConfirmedOutcomeTx(tx, tournament, match, createdReport, {
-        actorUserId: input.actorUserId,
-        auditAction: AuditAction.RESULT_OVERRIDDEN,
-        auditReason: sanitizeUserText(input.reason)
+        if (!assignedRegistrations.includes(input.winnerRegistrationId)) {
+          throw new ValidationError("The selected winner is not assigned to this match.");
+        }
+
+        const loserRegistrationId = assignedRegistrations.find(
+          (entry) => entry !== input.winnerRegistrationId
+        );
+
+        if (!loserRegistrationId) {
+          throw new ConflictError("The losing participant could not be resolved for this match.");
+        }
+
+        const createdReport = await tx.resultReport.create({
+          data: {
+            tournamentId: tournament.id,
+            matchId: match.id,
+            submittedByUserId: input.actorUserId,
+            reporterRegistrationId: null,
+            proposedWinnerRegistrationId: input.winnerRegistrationId,
+            outcomeType: MatchOutcomeType.WALKOVER,
+            status: MatchStatus.CONFIRMED,
+            reason: sanitizeUserText(input.reason),
+            confirmedByUserId: input.actorUserId,
+            idempotencyKey: input.idempotencyKey
+          }
+        });
+
+        return this.applyConfirmedOutcomeTx(tx, tournament, match, createdReport, {
+          actorUserId: input.actorUserId,
+          auditAction: AuditAction.MANUAL_ADVANCE,
+          auditReason: sanitizeUserText(input.reason)
+        });
       });
-    });
+      await this.bracketSyncTarget?.syncTournamentBracket(input.tournamentId);
+      return result;
+    } catch (error) {
+      throw mapUniqueConstraintError(error, "This manual advancement was already processed.");
+    }
   }
 
   private async applyConfirmedOutcomeTx(
@@ -381,9 +481,9 @@ export class MatchReportingService {
     const loserRegistrationId =
       winnerRegistrationId === player1RegistrationId ? player2RegistrationId : player1RegistrationId;
 
-    const snapshot = this.buildSnapshotFromTournament(tournament);
+    const snapshot = buildPersistedSnapshotFromTournament(tournament);
     const engine = BracketEngineFactory.create(
-      tournament.format === TournamentFormat.DOUBLE_ELIMINATION
+      tournament.format === "DOUBLE_ELIMINATION"
         ? "DOUBLE_ELIMINATION"
         : "SINGLE_ELIMINATION"
     );
@@ -440,7 +540,7 @@ export class MatchReportingService {
       });
     }
 
-    await this.writeAuditLogTx(tx, {
+    await writeAuditLogTx(tx, {
       tournamentId: tournament.id,
       guildId: tournament.guildId,
       actorUserId: options.actorUserId,
@@ -455,7 +555,7 @@ export class MatchReportingService {
       }
     });
 
-    await this.writeAuditLogTx(tx, {
+    await writeAuditLogTx(tx, {
       tournamentId: tournament.id,
       guildId: tournament.guildId,
       actorUserId: options.actorUserId,
@@ -470,7 +570,7 @@ export class MatchReportingService {
     });
 
     if (advancement.finalized && advancement.championId) {
-      await this.writeAuditLogTx(tx, {
+      await writeAuditLogTx(tx, {
         tournamentId: tournament.id,
         guildId: tournament.guildId,
         actorUserId: options.actorUserId,
@@ -490,84 +590,6 @@ export class MatchReportingService {
       loserRegistrationId,
       championRegistrationId: advancement.championId,
       finalized: advancement.finalized
-    };
-  }
-
-  private buildSnapshotFromTournament(tournament: TournamentWithRelations): BracketSnapshot {
-    const rounds: RoundNode[] = [];
-    const matches: Record<string, MatchNode> = {};
-
-    for (const bracket of tournament.brackets) {
-      for (const round of bracket.rounds) {
-        rounds.push({
-          id: round.id,
-          side: this.bracketTypeToSide(bracket.type),
-          roundNumber: round.roundNumber,
-          name: round.name,
-          matchIds: round.matches.map((match) => match.id)
-        });
-
-        for (const match of round.matches) {
-          matches[match.id] = {
-            id: match.id,
-            side: this.bracketTypeToSide(match.bracketType),
-            roundNumber: round.roundNumber,
-            sequence: match.sequence,
-            bestOf: match.bestOf,
-            status: this.matchStatusToDomain(match.status),
-            slots: [
-              {
-                entrantId: match.player1RegistrationId,
-                sourceMatchId: null,
-                sourceOutcome: null,
-                isBye: match.player1RegistrationId == null
-              },
-              {
-                entrantId: match.player2RegistrationId,
-                sourceMatchId: null,
-                sourceOutcome: null,
-                isBye: match.player2RegistrationId == null
-              }
-            ],
-            winnerId: match.winnerRegistrationId,
-            loserId: match.loserRegistrationId,
-            nextMatchId: match.nextMatchId,
-            nextMatchSlot: this.toDomainSlot(match.nextMatchSlot),
-            loserNextMatchId: match.loserNextMatchId,
-            loserNextMatchSlot: this.toDomainSlot(match.loserNextMatchSlot),
-            resetOfMatchId: match.resetOfMatchId
-          };
-        }
-      }
-    }
-
-    const championMatch = Object.values(matches)
-      .filter((match) => match.side === "GRAND_FINALS" || match.nextMatchId == null)
-      .sort((left, right) => {
-        const sideWeight = (value: MatchNode["side"]) =>
-          value === "WINNERS" ? 0 : value === "LOSERS" ? 1 : 2;
-        return sideWeight(right.side) - sideWeight(left.side) || right.roundNumber - left.roundNumber;
-      })[0];
-
-    return {
-      format:
-        tournament.format === TournamentFormat.DOUBLE_ELIMINATION
-          ? "DOUBLE_ELIMINATION"
-          : "SINGLE_ELIMINATION",
-      rounds,
-      matches,
-      championId: championMatch?.winnerId ?? null,
-      isFinalized: tournament.status === TournamentStatus.FINALIZED,
-      metadata: {
-        hasGrandFinalReset:
-          tournament.format === TournamentFormat.DOUBLE_ELIMINATION &&
-          (tournament.settings?.grandFinalResetEnabled ?? true),
-        initialEntrantCount: tournament.registrations.length,
-        bracketSize: Math.max(
-          2,
-          Object.values(matches).filter((match) => match.side === "WINNERS").length * 2
-        )
-      }
     };
   }
 
@@ -838,53 +860,10 @@ export class MatchReportingService {
     return tournament;
   }
 
-  private bracketTypeToSide(bracketType: BracketType): MatchNode["side"] {
-    if (bracketType === BracketType.WINNERS) return "WINNERS";
-    if (bracketType === BracketType.LOSERS) return "LOSERS";
-    return "GRAND_FINALS";
-  }
-
-  private matchStatusToDomain(status: MatchStatus): MatchNode["status"] {
-    if (status === MatchStatus.COMPLETED || status === MatchStatus.CONFIRMED) {
-      return "COMPLETED";
-    }
-    if (status === MatchStatus.CANCELLED) {
-      return "CANCELLED";
-    }
-    if (status === MatchStatus.READY || status === MatchStatus.AWAITING_CONFIRMATION) {
-      return "READY";
-    }
-    return "PENDING";
-  }
-
   private domainStatusToDb(status: MatchNode["status"]): MatchStatus {
     if (status === "COMPLETED") return MatchStatus.COMPLETED;
     if (status === "READY") return MatchStatus.READY;
     if (status === "CANCELLED") return MatchStatus.CANCELLED;
     return MatchStatus.PENDING;
-  }
-
-  private toDomainSlot(value: number | null): 0 | 1 | null {
-    if (value == null) return null;
-    if (value !== 0 && value !== 1) {
-      throw new ValidationError("Stored match slot link is invalid.");
-    }
-    return value;
-  }
-
-  private async writeAuditLogTx(
-    tx: TransactionClient,
-    args: {
-      tournamentId: string;
-      guildId: string;
-      actorUserId: string;
-      action: AuditAction;
-      targetType: string;
-      targetId: string;
-      reason?: string;
-      metadataJson?: Prisma.JsonObject;
-    }
-  ) {
-    await tx.auditLog.create({ data: args });
   }
 }
