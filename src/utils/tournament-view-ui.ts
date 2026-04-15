@@ -24,9 +24,6 @@ const colors = {
   neutral: 0x5865f2
 };
 
-const compactDate = (value: Date | null): string =>
-  value ? `<t:${Math.floor(value.getTime() / 1000)}:R>` : "Not set";
-
 const statusColor = (status: TournamentStatus | MatchStatus): number => {
   switch (status) {
     case TournamentStatus.IN_PROGRESS:
@@ -57,12 +54,17 @@ const formatParticipantLine = (
 ): string => {
   const prefix = showSeed && entry.seed != null ? `#${entry.seed}` : `${index}.`;
   const badges = [
-    prettyStatus(entry.status),
-    entry.checkedIn ? "Checked In" : null,
+    showSeed ? prettyStatus(entry.status) : null,
+    showSeed && entry.checkedIn ? "Checked In" : null,
     entry.placement != null ? `Place ${entry.placement}` : null
   ]
     .filter(Boolean)
     .join(" | ");
+
+  if (!showSeed) {
+    const secondary = [entry.leagueIgn, badges].filter(Boolean).join(" | ");
+    return `**${prefix}** <@${entry.discordUserId}>${secondary ? `\n${secondary}` : ""}`;
+  }
 
   return `**${prefix}** ${entry.displayName}${badges ? `\n${badges}` : ""}`;
 };
@@ -71,7 +73,6 @@ export const buildOverviewEmbed = (view: OverviewView): EmbedBuilder =>
   new EmbedBuilder()
     .setColor(statusColor(view.status))
     .setTitle(view.name)
-    .setDescription(view.description ?? "Competitive tournament overview.")
     .addFields(
       {
         name: "Status",
@@ -85,32 +86,10 @@ export const buildOverviewEmbed = (view: OverviewView): EmbedBuilder =>
       },
       {
         name: "Registration",
-        value: `${view.activeCount}/${view.maxParticipants} active\n${view.waitlistCount} waitlisted`,
-        inline: true
-      },
-      {
-        name: "Operations",
-        value: `${view.activeMatches} active matches\n${view.pendingReports} pending reports\n${view.disputedReports} disputed`,
-        inline: true
-      },
-      {
-        name: "Tournament Settings",
-        value: [
-          `Check-in: ${view.requireCheckIn ? "Required" : "Off"}`,
-          `Waitlist: ${view.allowWaitlist ? "Enabled" : "Disabled"}`,
-          `Seeding: ${prettyStatus(view.seedingMethod)}`
-        ].join("\n"),
-        inline: true
-      },
-      {
-        name: "Timing",
-        value: `Started: ${compactDate(view.startedAt)}\nCompleted: ${compactDate(view.completedAt)}`,
+        value: `${view.activeCount} registered`,
         inline: true
       }
-    )
-    .setFooter({
-      text: view.championName ? `Champion: ${view.championName}` : "Champion not decided yet"
-    });
+    );
 
 export const buildParticipantsEmbed = (
   view: ParticipantsPageView,
@@ -119,7 +98,7 @@ export const buildParticipantsEmbed = (
 ): EmbedBuilder =>
   new EmbedBuilder()
     .setColor(colors.neutral)
-    .setTitle(`${view.tournamentName} | ${title}`)
+    .setTitle(title)
     .setDescription(
       view.entries.length > 0
         ? view.entries
@@ -137,18 +116,20 @@ export const buildParticipantsComponents = (
   tournamentId: string,
   page: number,
   totalPages: number,
-  kind: "participants" | "waitlist"
+  kind: "participants" | "waitlist" | "overview-participants"
 ) => {
-  const nonceBase = `${kind}-${page}`;
+  const actionPrefix =
+    kind === "participants" ? "p" : kind === "waitlist" ? "w" : "o";
+  const nonceBase = `${actionPrefix}${page}`;
   return [
     new ActionRowBuilder<ButtonBuilder>().addComponents(
       new ButtonBuilder()
         .setCustomId(
           buildSignedCustomId(
             "view",
-            `${kind}:prev`,
+            `${actionPrefix}p`,
             `${tournamentId}|${Math.max(1, page - 1)}`,
-            `${nonceBase}-prev`
+            `${nonceBase}p`
           )
         )
         .setLabel("Previous")
@@ -158,9 +139,9 @@ export const buildParticipantsComponents = (
         .setCustomId(
           buildSignedCustomId(
             "view",
-            `${kind}:next`,
+            `${actionPrefix}n`,
             `${tournamentId}|${Math.min(totalPages, page + 1)}`,
-            `${nonceBase}-next`
+            `${nonceBase}n`
           )
         )
         .setLabel("Next")
@@ -209,9 +190,9 @@ export const buildBracketRoundComponents = (view: BracketRoundView) => [
       .setCustomId(
         buildSignedCustomId(
           "view",
-          "bracket:round",
+          "br",
           view.tournamentId,
-          `${view.selectedSide.toLowerCase()}-${view.selectedRoundNumber}`
+          `${view.selectedSide[0]}${view.selectedRoundNumber}`
         )
       )
       .setPlaceholder("Jump to another bracket round")
@@ -225,6 +206,12 @@ export const buildBracketRoundComponents = (view: BracketRoundView) => [
       )
   )
 ];
+
+export const buildOverviewWithParticipantsComponents = (
+  tournamentId: string,
+  page: number,
+  totalPages: number
+) => buildParticipantsComponents(tournamentId, page, totalPages, "overview-participants");
 
 export const buildMatchDetailEmbed = (view: MatchDetailView): EmbedBuilder =>
   new EmbedBuilder()
@@ -329,19 +316,19 @@ export const buildStaffPanelComponents = (
   new ActionRowBuilder<ButtonBuilder>().addComponents(
     new ButtonBuilder()
       .setCustomId(
-        buildSignedCustomId("view", "staff:overview", `${tournamentId}|${actorUserId}`, "staff-overview")
+        buildSignedCustomId("view", "so", `${tournamentId}|${actorUserId}`, "so")
       )
       .setLabel("Overview")
       .setStyle(activeTab === "overview" ? ButtonStyle.Primary : ButtonStyle.Secondary),
     new ButtonBuilder()
       .setCustomId(
-        buildSignedCustomId("view", "staff:reports", `${tournamentId}|${actorUserId}`, "staff-reports")
+        buildSignedCustomId("view", "sr", `${tournamentId}|${actorUserId}`, "sr")
       )
       .setLabel("Reports")
       .setStyle(activeTab === "reports" ? ButtonStyle.Primary : ButtonStyle.Secondary),
     new ButtonBuilder()
       .setCustomId(
-        buildSignedCustomId("view", "staff:participants", `${tournamentId}|${actorUserId}`, "staff-participants")
+        buildSignedCustomId("view", "sp", `${tournamentId}|${actorUserId}`, "sp")
       )
       .setLabel("Participants")
       .setStyle(activeTab === "participants" ? ButtonStyle.Primary : ButtonStyle.Secondary)

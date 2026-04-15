@@ -11,6 +11,7 @@ import {
 } from "@prisma/client";
 
 import { prisma } from "../config/prisma.js";
+import { slugify } from "../utils/slug.js";
 
 export class TournamentRepository {
   public async createTournament(data: Prisma.TournamentCreateInput): Promise<Tournament> {
@@ -52,6 +53,46 @@ export class TournamentRepository {
         }
       }
     });
+  }
+
+  public async resolveTournamentReference(guildId: string, reference: string): Promise<string | null> {
+    const trimmed = reference.trim();
+    const byId = await prisma.tournament.findFirst({
+      where: {
+        guildId,
+        id: trimmed
+      },
+      select: { id: true }
+    });
+
+    if (byId) {
+      return byId.id;
+    }
+
+    const bySlug = await prisma.tournament.findFirst({
+      where: {
+        guildId,
+        slug: slugify(trimmed)
+      },
+      select: { id: true }
+    });
+
+    if (bySlug) {
+      return bySlug.id;
+    }
+
+    const byName = await prisma.tournament.findFirst({
+      where: {
+        guildId,
+        name: {
+          equals: trimmed,
+          mode: "insensitive"
+        }
+      },
+      select: { id: true }
+    });
+
+    return byName?.id ?? null;
   }
 
   public async listTournaments(guildId: string, status?: TournamentStatus) {

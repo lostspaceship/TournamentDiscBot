@@ -27,7 +27,8 @@ export const handleRegistrationGroup = async (
         guildId,
         tournamentId,
         actorUserId: interaction.user.id,
-        displayName
+        displayName,
+        opggProfile: interaction.options.getString("opgg", true)
       });
 
       await interaction.reply({

@@ -15,25 +15,11 @@ type TournamentWithRelations = NonNullable<Awaited<ReturnType<TournamentReposito
 export interface OverviewView {
   id: string;
   name: string;
-  description: string | null;
   status: TournamentStatus;
   format: string;
   bestOf: number;
   activeCount: number;
-  checkedInCount: number;
-  totalCount: number;
-  maxParticipants: number;
-  waitlistCount: number;
-  requireCheckIn: boolean;
-  allowWaitlist: boolean;
   seedingMethod: string;
-  pendingReports: number;
-  disputedReports: number;
-  activeMatches: number;
-  completedMatches: number;
-  championName: string | null;
-  startedAt: Date | null;
-  completedAt: Date | null;
 }
 
 export interface ParticipantsPageView {
@@ -45,6 +31,8 @@ export interface ParticipantsPageView {
   entries: Array<{
     registrationId: string;
     displayName: string;
+    discordUserId: string;
+    leagueIgn: string | null;
     seed: number | null;
     status: RegistrationStatus;
     checkedIn: boolean;
@@ -135,40 +123,14 @@ export class ViewingService {
     const activeRegistrations = tournament.registrations.filter(
       (entry) => entry.status === RegistrationStatus.ACTIVE
     );
-    const reports = tournament.brackets
-      .flatMap((bracket) => bracket.rounds)
-      .flatMap((round) => round.matches)
-      .flatMap((match) => match.reports);
-    const matches = tournament.brackets.flatMap((bracket) => bracket.rounds).flatMap((round) => round.matches);
-    const champion = tournament.registrations.find((entry) => entry.placement === 1);
-
     return {
       id: tournament.id,
       name: tournament.name,
-      description: tournament.description,
       status: tournament.status,
       format: tournament.format,
       bestOf: tournament.bestOfDefault,
       activeCount: activeRegistrations.length,
-      checkedInCount: activeRegistrations.filter((entry) => entry.checkIn != null).length,
-      totalCount: tournament.registrations.length,
-      maxParticipants: tournament.maxParticipants,
-      waitlistCount: tournament.waitlistEntries.length,
-      requireCheckIn: tournament.requireCheckIn,
-      allowWaitlist: tournament.allowWaitlist,
-      seedingMethod: tournament.settings?.seedingMethod ?? "RANDOM",
-      pendingReports: reports.filter((entry) => entry.status === MatchStatus.AWAITING_CONFIRMATION).length,
-      disputedReports: reports.filter((entry) => entry.status === MatchStatus.DISPUTED).length,
-      activeMatches: matches.filter(
-        (entry) =>
-          entry.status === MatchStatus.READY ||
-          entry.status === MatchStatus.AWAITING_CONFIRMATION ||
-          entry.status === MatchStatus.DISPUTED
-      ).length,
-      completedMatches: matches.filter((entry) => entry.status === MatchStatus.COMPLETED).length,
-      championName: champion?.participant.displayName ?? null,
-      startedAt: tournament.startedAt,
-      completedAt: tournament.completedAt
+      seedingMethod: tournament.settings?.seedingMethod ?? "RANDOM"
     };
   }
 
@@ -179,12 +141,14 @@ export class ViewingService {
     pageSize = 10
   ): Promise<ParticipantsPageView> {
     const tournament = await this.requireTournament(guildId, tournamentId);
-    const ordered = [...tournament.registrations].sort((left, right) => {
+    const ordered = tournament.registrations
+      .filter((entry) => entry.status === RegistrationStatus.ACTIVE)
+      .sort((left, right) => {
       const leftSeed = left.seed?.seedNumber ?? Number.MAX_SAFE_INTEGER;
       const rightSeed = right.seed?.seedNumber ?? Number.MAX_SAFE_INTEGER;
       if (leftSeed !== rightSeed) return leftSeed - rightSeed;
       return left.joinedAt.getTime() - right.joinedAt.getTime();
-    });
+      });
 
     const totalPages = Math.max(1, Math.ceil(ordered.length / pageSize));
     const safePage = Math.min(Math.max(1, page), totalPages);
@@ -192,6 +156,8 @@ export class ViewingService {
     const entries = ordered.slice(startIndex, startIndex + pageSize).map((entry) => ({
       registrationId: entry.id,
       displayName: entry.participant.displayName,
+      discordUserId: entry.participant.discordUserId,
+      leagueIgn: entry.participant.opggProfile ?? null,
       seed: entry.seed?.seedNumber ?? null,
       status: entry.status,
       checkedIn: entry.checkIn != null,
@@ -411,6 +377,8 @@ export class ViewingService {
     const entries = ordered.slice(startIndex, startIndex + pageSize).map((entry) => ({
       registrationId: entry.id,
       displayName: entry.participant.displayName,
+      discordUserId: entry.participant.discordUserId,
+      leagueIgn: entry.participant.opggProfile ?? null,
       seed: null,
       status: RegistrationStatus.WAITLISTED,
       checkedIn: false,

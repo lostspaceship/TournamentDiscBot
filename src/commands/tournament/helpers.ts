@@ -2,7 +2,8 @@ import type { ChatInputCommandInteraction, GuildMember } from "discord.js";
 import { z } from "zod";
 
 import type { BootstrapContext } from "../../bootstrap/types.js";
-import { AppError, ValidationError } from "../../utils/errors.js";
+import { isUnknownInteractionError } from "../../utils/discord-api-errors.js";
+import { AppError, NotFoundError, ValidationError } from "../../utils/errors.js";
 
 export interface TournamentCommandContext {
   interaction: ChatInputCommandInteraction;
@@ -28,16 +29,38 @@ export const replyWithError = async (
       ? error.safeMessage
       : "An unexpected error occurred while handling this command.";
 
-  if (interaction.replied || interaction.deferred) {
-    await interaction.followUp({
+  try {
+    if (interaction.replied || interaction.deferred) {
+      await interaction.followUp({
+        content: message,
+        ephemeral: true
+      });
+      return;
+    }
+
+    await interaction.reply({
       content: message,
       ephemeral: true
     });
-    return;
+  } catch (replyError) {
+    if (isUnknownInteractionError(replyError)) {
+      return;
+    }
+
+    throw replyError;
+  }
+};
+
+export const resolveTournamentReference = async (
+  context: BootstrapContext,
+  guildId: string,
+  reference: string
+): Promise<string> => {
+  const resolved = await context.adminTournamentService.resolveTournamentReference(guildId, reference);
+
+  if (!resolved) {
+    throw new NotFoundError("Tournament not found. Use the tournament name or slug.");
   }
 
-  await interaction.reply({
-    content: message,
-    ephemeral: true
-  });
+  return resolved;
 };

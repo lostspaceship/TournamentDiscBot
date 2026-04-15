@@ -19,18 +19,24 @@ describe("BracketSyncService", () => {
     prismaMock.tournament.update.mockReset();
   });
 
-  it("posts a bracket image and stores the tracked message id", async () => {
-    const send = vi.fn().mockResolvedValue({ id: "message-1" });
+  it("posts info and bracket messages and stores the tracked ids", async () => {
+    const send = vi
+      .fn()
+      .mockResolvedValueOnce({ id: "info-message-1" })
+      .mockResolvedValueOnce({ id: "bracket-message-1" });
     const repo = {
       async getTournament() {
         return {
           id: "t1",
           guildId: "g1",
           name: "Render Cup",
+          gameTitle: "League of Legends",
           status: "REGISTRATION_OPEN",
           format: "SINGLE_ELIMINATION",
           bestOfDefault: 3,
           requireCheckIn: false,
+          infoMessageChannelId: null,
+          infoMessageId: null,
           bracketMessageChannelId: null,
           bracketMessageId: null,
           settings: {
@@ -97,13 +103,15 @@ describe("BracketSyncService", () => {
 
     await service.syncTournamentBracket("t1");
 
-    expect(send).toHaveBeenCalledTimes(1);
+    expect(send).toHaveBeenCalledTimes(2);
     expect(prismaMock.tournament.update).toHaveBeenCalledWith(
       expect.objectContaining({
         where: { id: "t1" },
         data: expect.objectContaining({
+          infoMessageChannelId: "channel-1",
+          infoMessageId: "info-message-1",
           bracketMessageChannelId: "channel-1",
-          bracketMessageId: "message-1"
+          bracketMessageId: "bracket-message-1"
         })
       })
     );

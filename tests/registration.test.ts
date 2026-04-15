@@ -53,7 +53,8 @@ describe("RegistrationService", () => {
         guildId: "g1",
         tournamentId: "t1",
         actorUserId: "user-1",
-        displayName: "User 1"
+        displayName: "User 1",
+        opggProfile: "user1"
       })
     ).rejects.toThrowError(/already registered/i);
   });
@@ -106,7 +107,8 @@ describe("RegistrationService", () => {
       guildId: "g1",
       tournamentId: "t1",
       actorUserId: "user-2",
-      displayName: "User 2"
+      displayName: "User 2",
+      opggProfile: "user2"
     });
 
     expect(result.waitlisted).toBe(true);

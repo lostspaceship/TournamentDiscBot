@@ -71,6 +71,10 @@ interface ManualAdvanceInput extends MatchActionInput {
   idempotencyKey: string;
 }
 
+interface UndoManualAdvanceInput extends MatchActionInput {
+  reportId: string;
+}
+
 type TournamentWithRelations = TournamentWithBracketData;
 type PersistedReport = {
   id: string;
@@ -78,6 +82,15 @@ type PersistedReport = {
   proposedWinnerRegistrationId: string | null;
   reason: string | null;
 };
+
+const bracketMutationAuditActions = [
+  AuditAction.RESULT_CONFIRMED,
+  AuditAction.RESULT_OVERRIDDEN,
+  AuditAction.MATCH_ADVANCED,
+  AuditAction.MANUAL_ADVANCE,
+  AuditAction.MANUAL_ADVANCE_UNDONE,
+  AuditAction.TOURNAMENT_FINALIZED
+] as const;
 
 export class MatchReportingService {
   public constructor(
@@ -405,6 +418,7 @@ export class MatchReportingService {
 
         const tournament = await this.loadTournamentTx(tx, input.tournamentId, input.guildId);
         const match = this.requireMatchRecord(tournament, input.matchId);
+        const snapshotBefore = buildPersistedSnapshotFromTournament(tournament);
 
         this.validateTournamentIsActive(tournament);
         this.validateMatchReportableOrAwaiting(match);
@@ -447,7 +461,11 @@ export class MatchReportingService {
         return this.applyConfirmedOutcomeTx(tx, tournament, match, createdReport, {
           actorUserId: input.actorUserId,
           auditAction: AuditAction.MANUAL_ADVANCE,
-          auditReason: sanitizeUserText(input.reason)
+          auditReason: sanitizeUserText(input.reason),
+          additionalMetadata: {
+            snapshotBefore: snapshotBefore as unknown as Prisma.JsonObject,
+            sourceMatchId: match.id
+          } as Prisma.JsonObject
         });
       });
       await this.bracketSyncTarget?.syncTournamentBracket(input.tournamentId);
@@ -455,6 +473,96 @@ export class MatchReportingService {
     } catch (error) {
       throw mapUniqueConstraintError(error, "This manual advancement was already processed.");
     }
+  }
+
+  public async undoManualAdvance(input: UndoManualAdvanceInput) {
+    await prisma.$transaction(async (tx) => {
+      await lockTournamentTx(tx, input.tournamentId);
+      const tournament = await this.loadTournamentTx(tx, input.tournamentId, input.guildId);
+
+      const report = await tx.resultReport.findFirst({
+        where: {
+          id: input.reportId,
+          tournamentId: tournament.id
+        }
+      });
+      if (!report) {
+        throw new NotFoundError("Manual advance report not found for this tournament.");
+      }
+
+      const auditLog = await tx.auditLog.findFirst({
+        where: {
+          tournamentId: tournament.id,
+          action: AuditAction.MANUAL_ADVANCE,
+          targetId: report.id
+        },
+        orderBy: { createdAt: "desc" }
+      });
+
+      if (!auditLog) {
+        throw new ConflictError("This result report was not created by a manual advance.");
+      }
+
+      const laterMutations = await tx.auditLog.findFirst({
+        where: {
+          tournamentId: tournament.id,
+          createdAt: { gt: auditLog.createdAt },
+          action: {
+            in: [...bracketMutationAuditActions]
+          }
+        },
+        orderBy: { createdAt: "asc" }
+      });
+
+      if (laterMutations) {
+        throw new ConflictError("This manual advance can no longer be undone because the bracket changed afterward.");
+      }
+
+      const snapshotBefore = this.extractSnapshotFromAuditLog(auditLog.metadataJson);
+      const currentMatchIds = new Set(
+        tournament.brackets.flatMap((bracket) => bracket.rounds).flatMap((round) => round.matches).map((match) => match.id)
+      );
+      const snapshotMatchIds = new Set(Object.keys(snapshotBefore.matches));
+      if (
+        currentMatchIds.size !== snapshotMatchIds.size ||
+        [...currentMatchIds].some((matchId) => !snapshotMatchIds.has(matchId))
+      ) {
+        throw new ConflictError("This manual advance cannot be undone safely because the match structure changed.");
+      }
+
+      await this.applySnapshotToExistingMatchesTx(tx, tournament, snapshotBefore);
+      await this.resetPlacementsFromSnapshotTx(tx, tournament, snapshotBefore);
+
+      await tx.resultReport.update({
+        where: { id: report.id },
+        data: {
+          status: MatchStatus.CANCELLED,
+          reason: report.reason ? `${report.reason} | Undone by staff` : "Undone by staff"
+        }
+      });
+
+      await tx.tournament.update({
+        where: { id: tournament.id },
+        data: {
+          status: snapshotBefore.isFinalized ? TournamentStatus.FINALIZED : TournamentStatus.IN_PROGRESS,
+          completedAt: snapshotBefore.isFinalized ? tournament.completedAt : null
+        }
+      });
+
+      await writeAuditLogTx(tx, {
+        tournamentId: tournament.id,
+        guildId: tournament.guildId,
+        actorUserId: input.actorUserId,
+        action: AuditAction.MANUAL_ADVANCE_UNDONE,
+        targetType: "ResultReport",
+        targetId: report.id,
+        metadataJson: {
+          sourceAuditLogId: auditLog.id
+        }
+      });
+    });
+
+    await this.bracketSyncTarget?.syncTournamentBracket(input.tournamentId);
   }
 
   private async applyConfirmedOutcomeTx(
@@ -466,6 +574,7 @@ export class MatchReportingService {
       actorUserId: string;
       auditAction: AuditAction;
       auditReason?: string;
+      additionalMetadata?: Prisma.JsonObject;
     }
   ) {
     const winnerRegistrationId = report.proposedWinnerRegistrationId;
@@ -551,7 +660,8 @@ export class MatchReportingService {
       metadataJson: {
         matchId: sourceMatch.id,
         winnerRegistrationId,
-        loserRegistrationId
+        loserRegistrationId,
+        ...options.additionalMetadata
       }
     });
 
@@ -630,6 +740,71 @@ export class MatchReportingService {
         }
       });
     }
+  }
+
+  private async resetPlacementsFromSnapshotTx(
+    tx: TransactionClient,
+    tournament: TournamentWithRelations,
+    snapshot: BracketSnapshot
+  ): Promise<void> {
+    await tx.registration.updateMany({
+      where: {
+        tournamentId: tournament.id,
+        status: {
+          in: [RegistrationStatus.ACTIVE, RegistrationStatus.ELIMINATED]
+        }
+      },
+      data: {
+        placement: null,
+        status: RegistrationStatus.ACTIVE
+      }
+    });
+
+    await this.updatePlacementsTx(tx, tournament.id, snapshot);
+  }
+
+  private async applySnapshotToExistingMatchesTx(
+    tx: TransactionClient,
+    tournament: TournamentWithRelations,
+    snapshot: BracketSnapshot
+  ): Promise<void> {
+    for (const match of tournament.brackets.flatMap((bracket) => bracket.rounds).flatMap((round) => round.matches)) {
+      const prior = snapshot.matches[match.id];
+      if (!prior) {
+        throw new ConflictError("Undo snapshot is missing a persisted match.");
+      }
+
+      await tx.match.update({
+        where: { id: match.id },
+        data: {
+          player1RegistrationId: prior.slots[0].entrantId,
+          player2RegistrationId: prior.slots[1].entrantId,
+          status: this.domainStatusToDb(prior.status),
+          winnerRegistrationId: prior.winnerId,
+          loserRegistrationId: prior.loserId,
+          completedAt: prior.status === "COMPLETED" ? match.completedAt ?? new Date() : null,
+          version: { increment: 1 }
+        }
+      });
+    }
+  }
+
+  private extractSnapshotFromAuditLog(metadataJson: Prisma.JsonValue | null): BracketSnapshot {
+    if (
+      !metadataJson ||
+      typeof metadataJson !== "object" ||
+      Array.isArray(metadataJson) ||
+      !("snapshotBefore" in metadataJson)
+    ) {
+      throw new ConflictError("Undo snapshot is unavailable for this manual advance.");
+    }
+
+    const snapshot = (metadataJson as { snapshotBefore?: BracketSnapshot }).snapshotBefore;
+    if (!snapshot || typeof snapshot !== "object" || !("matches" in snapshot) || !("rounds" in snapshot)) {
+      throw new ConflictError("Undo snapshot data is invalid.");
+    }
+
+    return snapshot;
   }
 
   private validateTournamentIsActive(tournament: TournamentWithRelations): void {

@@ -26,14 +26,23 @@ export const reasonedTournamentActionSchema = z.object({
 
 export const createTournamentCommandSchema = z.object({
   name: z.string().trim().min(3).max(80),
-  description: z.string().trim().max(500).optional().nullable(),
-  format: z.nativeEnum(TournamentFormat),
-  maxParticipants: z.number().int().min(2).max(4096),
+  announcementChannelId: z.string().trim().min(1).max(32),
+  format: z.nativeEnum(TournamentFormat).default(TournamentFormat.SINGLE_ELIMINATION),
+  maxParticipants: z.number().int().min(2).max(4096).default(256),
   bestOfDefault: z.number().int().min(1).max(11).refine((value) => value % 2 === 1, {
     message: "Best-of value must be odd."
-  }),
-  requireCheckIn: z.boolean(),
-  allowWaitlist: z.boolean()
+  }).default(3)
+});
+
+export const joinTournamentCommandSchema = z.object({
+  tournamentId: idSchema,
+  name: z.string().trim().min(2).max(80),
+  leagueIgn: z
+    .string()
+    .trim()
+    .min(3)
+    .max(120)
+    .regex(/^[^#\r\n]{1,50}#[^#\r\n]{1,50}$/, "League ID must look like name#tag.")
 });
 
 export const configTournamentCommandSchema = z.object({

@@ -1,4 +1,10 @@
-import { GuildMember, type ChatInputCommandInteraction } from "discord.js";
+import {
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+  GuildMember,
+  type ChatInputCommandInteraction
+} from "discord.js";
 import { BracketType, MatchOutcomeType, SeedingMethod, StaffRoleType, TournamentFormat } from "@prisma/client";
 
 import type { BootstrapContext } from "../../bootstrap/types.js";
@@ -7,6 +13,7 @@ import {
   buildBracketRoundEmbed,
   buildMatchDetailEmbed,
   buildOverviewEmbed,
+  buildOverviewWithParticipantsComponents,
   buildParticipantsComponents,
   buildParticipantsEmbed,
   buildStaffPanelComponents,
@@ -19,6 +26,7 @@ import {
   confirmResultCommandSchema,
   createTournamentCommandSchema,
   disputeResultCommandSchema,
+  joinTournamentCommandSchema,
   manualAdvanceCommandSchema,
   matchReportCommandSchema,
   matchViewCommandSchema,
@@ -27,7 +35,8 @@ import {
   reasonedTournamentActionSchema,
   tournamentIdSchema
 } from "../../validators/command-schemas.js";
-import { parseInput, replyWithError } from "../tournament/helpers.js";
+import { buildSignedCustomId } from "../../interactions/secure-payload.js";
+import { parseInput, replyWithError, resolveTournamentReference } from "../tournament/helpers.js";
 
 export const executeTourCommand = async (
   interaction: ChatInputCommandInteraction,
@@ -47,33 +56,35 @@ export const executeTourCommand = async (
     const guildId = interaction.guildId;
     const member = interaction.member;
     const subcommand = interaction.options.getSubcommand(true);
-    const tournamentId = interaction.options.getString("tournament_id");
-    const displayName = member.displayName ?? interaction.user.username;
-
+    const tournamentReference = interaction.options.getString("tournament_id");
+    const tournamentId =
+      tournamentReference != null
+        ? await resolveTournamentReference(context, guildId, tournamentReference)
+        : null;
     switch (subcommand) {
       case "create": {
         await context.permissionService.requireMinimumRole(guildId, member, StaffRoleType.TOURNAMENT_STAFF, "command.tour.create");
+        const channel = interaction.options.getChannel("channel", true);
         const parsed = parseInput(createTournamentCommandSchema, {
           name: interaction.options.getString("name", true),
-          description: interaction.options.getString("description"),
-          format: interaction.options.getString("format", true) as TournamentFormat,
-          maxParticipants: interaction.options.getInteger("max_participants", true),
-          bestOfDefault: interaction.options.getInteger("best_of", true),
-          requireCheckIn: interaction.options.getBoolean("require_checkin") ?? false,
-          allowWaitlist: interaction.options.getBoolean("allow_waitlist") ?? true
+          announcementChannelId: channel.id,
+          format: TournamentFormat.SINGLE_ELIMINATION,
+          maxParticipants: 256,
+          bestOfDefault: 3
         });
         const created = await context.adminTournamentService.createTournament({
           guildId,
           actorUserId: interaction.user.id,
           name: parsed.name,
-          description: parsed.description,
-          format: parsed.format,
-          maxParticipants: parsed.maxParticipants,
-          bestOfDefault: parsed.bestOfDefault,
-          requireCheckIn: parsed.requireCheckIn,
-          allowWaitlist: parsed.allowWaitlist
+          announcementChannelId: parsed.announcementChannelId,
+          format: parsed.format ?? TournamentFormat.SINGLE_ELIMINATION,
+          maxParticipants: parsed.maxParticipants ?? 256,
+          bestOfDefault: parsed.bestOfDefault ?? 3
         });
-        await interaction.reply({ content: `Tournament created: ${created.name} (${created.id})`, ephemeral: true });
+        await interaction.reply({
+          content: `Tournament created: ${created.name}. Public updates are now tracked in <#${parsed.announcementChannelId}>. Use \`${created.slug}\` in commands.`,
+          ephemeral: true
+        });
         return;
       }
 
@@ -122,12 +133,9 @@ export const executeTourCommand = async (
               `Tournament: ${tournament.name}`,
               `Status: ${tournament.status}`,
               `Format: ${tournament.format}`,
-              `Max participants: ${tournament.maxParticipants}`,
               `Best of: ${tournament.bestOfDefault}`,
-              `Require check-in: ${tournament.requireCheckIn ? "yes" : "no"}`,
-              `Waitlist: ${tournament.allowWaitlist ? "enabled" : "disabled"}`,
-              `Seeding: ${tournament.settings?.seedingMethod ?? "RANDOM"}`,
-              `Opponent confirm: ${tournament.settings?.requireOpponentConfirmation ? "yes" : "no"}`
+              `Channel: ${tournament.infoMessageChannelId ? `<#${tournament.infoMessageChannelId}>` : "Not set"}`,
+              `Seeding: ${tournament.settings?.seedingMethod ?? "RANDOM"}`
             ].join("\n"),
             ephemeral: true
           });
@@ -172,13 +180,18 @@ export const executeTourCommand = async (
       case "join":
       case "leave":
       case "checkin": {
-        const parsed = parseInput(tournamentIdSchema, { tournamentId });
         if (subcommand === "join") {
+          const parsed = parseInput(joinTournamentCommandSchema, {
+            tournamentId,
+            name: interaction.options.getString("name", true),
+            leagueIgn: interaction.options.getString("league_ign", true)
+          });
           const result = await context.registrationService.joinTournament({
             guildId,
             tournamentId: parsed.tournamentId,
             actorUserId: interaction.user.id,
-            displayName
+            displayName: parsed.name,
+            opggProfile: parsed.leagueIgn
           });
           await interaction.reply({
             content: result.waitlisted
@@ -188,6 +201,7 @@ export const executeTourCommand = async (
           });
           return;
         }
+        const parsed = parseInput(tournamentIdSchema, { tournamentId });
         if (subcommand === "leave") {
           const result = await context.registrationService.leaveTournament({
             guildId,
@@ -212,17 +226,19 @@ export const executeTourCommand = async (
       case "view": {
         const parsed = parseInput(tournamentIdSchema, { tournamentId });
         const overview = await context.viewingService.getOverview(guildId, parsed.tournamentId);
-        const embeds = [buildOverviewEmbed(overview)];
-        try {
-          const roundView = await context.viewingService.getBracketRound(guildId, parsed.tournamentId);
-          embeds.push(buildBracketRoundEmbed(roundView));
-          await interaction.reply({
-            embeds,
-            components: buildBracketRoundComponents(roundView)
-          });
-        } catch {
-          await interaction.reply({ embeds });
-        }
+        const participants = await context.viewingService.getParticipantsPage(
+          guildId,
+          parsed.tournamentId,
+          1
+        );
+        await interaction.reply({
+          embeds: [buildOverviewEmbed(overview), buildParticipantsEmbed(participants, "Registered Players", false)],
+          components: buildOverviewWithParticipantsComponents(
+            participants.tournamentId,
+            participants.page,
+            participants.totalPages
+          )
+        });
         return;
       }
 
@@ -230,7 +246,7 @@ export const executeTourCommand = async (
         const parsed = parseInput(tournamentIdSchema, { tournamentId });
         const view = await context.viewingService.getParticipantsPage(guildId, parsed.tournamentId, 1);
         await interaction.reply({
-          embeds: [buildParticipantsEmbed(view, "Participants")],
+          embeds: [buildParticipantsEmbed(view, "Registered Players", false)],
           components: buildParticipantsComponents(view.tournamentId, view.page, view.totalPages, "participants")
         });
         return;
@@ -381,6 +397,21 @@ export const executeTourCommand = async (
             content: result.finalized
               ? `Manual advance applied. Tournament finalized with champion ${result.championRegistrationId}.`
               : "Manual advance applied and bracket updated.",
+            components: [
+              new ActionRowBuilder<ButtonBuilder>().addComponents(
+                new ButtonBuilder()
+                  .setCustomId(
+                    buildSignedCustomId(
+                      "staff",
+                      "undo-advance",
+                      `${parsed.tournamentId}|${result.reportId}|${interaction.user.id}`,
+                      `undo-${result.reportId}`
+                    )
+                  )
+                  .setLabel("Undo Advance")
+                  .setStyle(ButtonStyle.Secondary)
+              )
+            ],
             ephemeral: true
           });
           return;

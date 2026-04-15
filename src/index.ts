@@ -20,6 +20,8 @@ import { MatchReportingService } from "./services/match-reporting-service.js";
 import { RegistrationService } from "./services/registration-service.js";
 import { ViewingService } from "./services/viewing-service.js";
 import { tournamentViewHandler } from "./interactions/tournament-view-handler.js";
+import { tournamentStaffHandler } from "./interactions/tournament-staff-handler.js";
+import { tournamentBracketHandler } from "./interactions/tournament-bracket-handler.js";
 
 const runtime: BootstrapContext["runtime"] = {
   startedAt: new Date(),
@@ -52,7 +54,11 @@ const adminTournamentService = new AdminTournamentService(
 const registrationService = new RegistrationService(tournamentRepository, bracketSyncService);
 const matchReportingService = new MatchReportingService(tournamentRepository, bracketSyncService);
 const viewingService = new ViewingService(tournamentRepository);
-const interactionHandlers: BootstrapContext["interactionHandlers"] = [tournamentViewHandler];
+const interactionHandlers: BootstrapContext["interactionHandlers"] = [
+  tournamentViewHandler,
+  tournamentStaffHandler,
+  tournamentBracketHandler
+];
 const healthServer = createHealthServer({
   logger,
   runtime,

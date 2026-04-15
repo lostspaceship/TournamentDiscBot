@@ -7,6 +7,8 @@ import { parseSignedCustomId } from "./secure-payload.js";
 import {
   buildBracketRoundComponents,
   buildBracketRoundEmbed,
+  buildOverviewEmbed,
+  buildOverviewWithParticipantsComponents,
   buildParticipantsComponents,
   buildParticipantsEmbed,
   buildStaffPanelComponents,
@@ -71,7 +73,7 @@ export const tournamentViewHandler: InteractionHandlerModule = {
         return;
       }
 
-      if (parsed.action === "participants:prev" || parsed.action === "participants:next") {
+      if (parsed.action === "pp" || parsed.action === "pn") {
         const [tournamentId, pageValue] = parsed.entityId.split("|");
         const page = Number(pageValue);
         const view = await context.viewingService.getParticipantsPage(interaction.guildId!, tournamentId!, page);
@@ -83,7 +85,20 @@ export const tournamentViewHandler: InteractionHandlerModule = {
         return;
       }
 
-      if (parsed.action === "waitlist:prev" || parsed.action === "waitlist:next") {
+      if (parsed.action === "op" || parsed.action === "on") {
+        const [tournamentId, pageValue] = parsed.entityId.split("|");
+        const page = Number(pageValue);
+        const overview = await context.viewingService.getOverview(interaction.guildId!, tournamentId!);
+        const view = await context.viewingService.getParticipantsPage(interaction.guildId!, tournamentId!, page);
+
+        await interaction.update({
+          embeds: [buildOverviewEmbed(overview), buildParticipantsEmbed(view, "Registered Players")],
+          components: buildOverviewWithParticipantsComponents(view.tournamentId, view.page, view.totalPages)
+        });
+        return;
+      }
+
+      if (parsed.action === "wp" || parsed.action === "wn") {
         const [tournamentId, pageValue] = parsed.entityId.split("|");
         const page = Number(pageValue);
         const view = await context.viewingService.getWaitlistPage(interaction.guildId!, tournamentId!, page);
@@ -95,7 +110,7 @@ export const tournamentViewHandler: InteractionHandlerModule = {
         return;
       }
 
-      if (parsed.action === "bracket:round") {
+      if (parsed.action === "br") {
         if (!interaction.isStringSelectMenu()) {
           throw new AppError("INVALID_INTERACTION", "This control expects a round selection.");
         }
@@ -120,17 +135,13 @@ export const tournamentViewHandler: InteractionHandlerModule = {
         return;
       }
 
-      if (
-        parsed.action === "staff:overview" ||
-        parsed.action === "staff:reports" ||
-        parsed.action === "staff:participants"
-      ) {
+      if (parsed.action === "so" || parsed.action === "sr" || parsed.action === "sp") {
         const member = asGuildMember(interaction);
         await context.permissionService.requireMinimumRole(
           interaction.guildId!,
           member,
           StaffRoleType.TOURNAMENT_STAFF,
-          `interaction.${parsed.action}`
+          `interaction.view.${parsed.action}`
         );
 
         const [tournamentId, actorUserId] = parsed.entityId.split("|");
@@ -138,7 +149,12 @@ export const tournamentViewHandler: InteractionHandlerModule = {
           throw new PermissionError("This staff panel belongs to another moderator.");
         }
 
-        const tab = parsed.action.split(":")[1] as "overview" | "reports" | "participants";
+        const tab =
+          parsed.action === "so"
+            ? "overview"
+            : parsed.action === "sr"
+              ? "reports"
+              : "participants";
         const view = await context.viewingService.getStaffPanel(
           interaction.guildId!,
           tournamentId!,

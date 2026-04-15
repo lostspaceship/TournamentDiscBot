@@ -30,28 +30,24 @@ export const handleLifecycleGroup = async (
     case "create": {
       const parsed = parseInput(createTournamentCommandSchema, {
         name: interaction.options.getString("name", true),
-        description: interaction.options.getString("description"),
-        format: interaction.options.getString("format", true) as TournamentFormat,
-        maxParticipants: interaction.options.getInteger("max_participants", true),
-        bestOfDefault: interaction.options.getInteger("best_of", true),
-        requireCheckIn: interaction.options.getBoolean("require_checkin") ?? false,
-        allowWaitlist: interaction.options.getBoolean("allow_waitlist") ?? true
+        announcementChannelId: interaction.options.getChannel("channel", true).id,
+        format: TournamentFormat.SINGLE_ELIMINATION,
+        maxParticipants: 256,
+        bestOfDefault: 3
       });
 
       const created = await context.adminTournamentService.createTournament({
         guildId,
         actorUserId: interaction.user.id,
         name: parsed.name,
-        description: parsed.description,
-        format: parsed.format,
-        maxParticipants: parsed.maxParticipants,
-        bestOfDefault: parsed.bestOfDefault,
-        requireCheckIn: parsed.requireCheckIn,
-        allowWaitlist: parsed.allowWaitlist
+        announcementChannelId: parsed.announcementChannelId,
+        format: parsed.format ?? TournamentFormat.SINGLE_ELIMINATION,
+        maxParticipants: parsed.maxParticipants ?? 256,
+        bestOfDefault: parsed.bestOfDefault ?? 3
       });
 
       await interaction.reply({
-        content: `Tournament created: ${created.name} (${created.id})`,
+        content: `Tournament created: ${created.name} (${created.slug})`,
         ephemeral: true
       });
       return true;
@@ -176,14 +172,12 @@ export const handleLifecycleGroup = async (
       await interaction.reply({
         content: [
           `Tournament: ${tournament.name}`,
+          `Game: ${tournament.gameTitle ?? "Not set"}`,
           `Status: ${tournament.status}`,
           `Format: ${tournament.format}`,
-          `Max participants: ${tournament.maxParticipants}`,
           `Best of: ${tournament.bestOfDefault}`,
-          `Require check-in: ${tournament.requireCheckIn ? "yes" : "no"}`,
-          `Waitlist: ${tournament.allowWaitlist ? "enabled" : "disabled"}`,
+          `Channel: ${tournament.infoMessageChannelId ? `<#${tournament.infoMessageChannelId}>` : "Not set"}`,
           `Seeding: ${tournament.settings?.seedingMethod ?? "RANDOM"}`,
-          `Opponent confirm: ${tournament.settings?.requireOpponentConfirmation ? "yes" : "no"}`
         ].join("\n"),
         ephemeral: true
       });

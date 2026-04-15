@@ -99,6 +99,7 @@ enum AuditAction {
   RESULT_OVERRIDDEN
   MATCH_ADVANCED
   MANUAL_ADVANCE
+  MANUAL_ADVANCE_UNDONE
   STAFF_OVERRIDE
 }
 
@@ -136,6 +137,8 @@ model Tournament {
   guildId            String
   createdByUserId    String
   name               String
+  slug               String
+  gameTitle          String?
   description        String?
   status             TournamentStatus    @default(DRAFT)
   format             TournamentFormat
@@ -146,6 +149,8 @@ model Tournament {
   allowWaitlist      Boolean             @default(true)
   mutualExclusionKey String?
   bestOfDefault      Int                 @default(3)
+  infoMessageChannelId String?
+  infoMessageId      String?
   bracketMessageChannelId String?
   bracketMessageId   String?
   bracketImageUpdatedAt DateTime?
@@ -170,6 +175,7 @@ model Tournament {
   @@index([guildId, status])
   @@index([guildConfigId])
   @@index([mutualExclusionKey])
+  @@unique([guildId, slug])
 }
 
 model TournamentSettings {
@@ -196,6 +202,7 @@ model Participant {
   guildId        String
   discordUserId  String
   displayName    String
+  opggProfile    String?
   rating         Int?
   createdAt      DateTime       @default(now())
   updatedAt      DateTime       @updatedAt

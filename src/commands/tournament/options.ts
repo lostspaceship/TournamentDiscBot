@@ -1,4 +1,5 @@
 import type {
+  SlashCommandChannelOption,
   SlashCommandBooleanOption,
   SlashCommandIntegerOption,
   SlashCommandStringOption,
@@ -8,7 +9,7 @@ import type {
 
 export const addTournamentIdOption = (
   subcommand: SlashCommandSubcommandBuilder,
-  description = "Tournament ID"
+  description = "Tournament name or slug"
 ): SlashCommandSubcommandBuilder =>
   subcommand.addStringOption((option) =>
     option.setName("tournament_id").setDescription(description).setRequired(true)
@@ -56,4 +57,11 @@ export const userOption = (
   description: string,
   required = false
 ) => (option: SlashCommandUserOption): SlashCommandUserOption =>
+  option.setName(name).setDescription(description).setRequired(required);
+
+export const channelOption = (
+  name: string,
+  description: string,
+  required = false
+) => (option: SlashCommandChannelOption): SlashCommandChannelOption =>
   option.setName(name).setDescription(description).setRequired(required);

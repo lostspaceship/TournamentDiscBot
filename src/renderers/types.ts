@@ -27,5 +27,15 @@ export interface BracketRenderModel {
   mode: "OFFICIAL" | "PREVIEW" | "NONE";
   updatedLabel: string;
   registrationCount: number;
+  page: number;
+  totalPages: number;
+  pageLabel: string;
   rounds: BracketRenderRound[];
+  placeholder?: {
+    bracketSize: number;
+    startRound: number;
+    endRound: number;
+    totalRounds: number;
+    entrantNames: string[];
+  };
 }

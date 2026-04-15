@@ -1,9 +1,10 @@
-import { PermissionFlagsBits, SlashCommandBuilder } from "discord.js";
+import { ChannelType, PermissionFlagsBits, SlashCommandBuilder } from "discord.js";
 
 import {
   addRequiredReasonOption,
   addTournamentIdOption,
   boolOption,
+  channelOption,
   intOption,
   stringOption,
   userOption
@@ -23,35 +24,13 @@ export const tourCommandDefinition = new SlashCommandBuilder()
   .addSubcommand((subcommand) =>
     subcommand
       .setName("create")
-      .setDescription("Create a tournament")
+      .setDescription("Create a tournament with a live info post and bracket post")
       .addStringOption(stringOption("name", "Tournament name", true))
-      .addStringOption((option) =>
-        option
-          .setName("format")
-          .setDescription("Bracket format")
-          .setRequired(true)
-          .addChoices(
-            { name: "Single Elimination", value: "SINGLE_ELIMINATION" },
-            { name: "Double Elimination", value: "DOUBLE_ELIMINATION" }
-          )
+      .addChannelOption((option) =>
+        channelOption("channel", "Channel to keep the tournament info and bracket updated", true)(
+          option
+        ).addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement)
       )
-      .addIntegerOption(
-        intOption("max_participants", "Maximum participant count", {
-          minValue: 2,
-          maxValue: 4096,
-          required: true
-        })
-      )
-      .addIntegerOption(
-        intOption("best_of", "Default match format", {
-          minValue: 1,
-          maxValue: 11,
-          required: true
-        })
-      )
-      .addBooleanOption(boolOption("require_checkin", "Require players to check in before start"))
-      .addBooleanOption(boolOption("allow_waitlist", "Allow waitlist once capacity is reached"))
-      .addStringOption(stringOption("description", "Tournament description"))
   )
   .addSubcommand((subcommand) =>
     addTournamentIdOption(subcommand.setName("config").setDescription("Update tournament configuration"))
@@ -81,6 +60,8 @@ export const tourCommandDefinition = new SlashCommandBuilder()
   )
   .addSubcommand((subcommand) =>
     addTournamentIdOption(subcommand.setName("join").setDescription("Join a tournament"))
+      .addStringOption(stringOption("name", "Name to show on the bracket", true))
+      .addStringOption(stringOption("league_ign", "Your League ID, for example test#test", true))
   )
   .addSubcommand((subcommand) =>
     addTournamentIdOption(subcommand.setName("leave").setDescription("Leave a tournament before it starts"))

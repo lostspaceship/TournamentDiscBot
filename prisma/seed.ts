@@ -36,10 +36,13 @@ const run = async () => {
       guildId: "example-guild",
       createdByUserId: "example-admin",
       name: "Example Weekly Cup",
-      description: "Seeded sample tournament",
+      slug: "example-weekly-cup",
+      gameTitle: "League of Legends (OP.GG)",
+      description: null,
       format: TournamentFormat.SINGLE_ELIMINATION,
       maxParticipants: 16,
-      requireCheckIn: true,
+      requireCheckIn: false,
+      allowWaitlist: false,
       settings: {
         create: {
           hasLosersBracket: false,

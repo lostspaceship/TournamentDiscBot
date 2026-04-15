@@ -23,6 +23,7 @@ interface JoinTournamentInput {
   tournamentId: string;
   actorUserId: string;
   displayName: string;
+  opggProfile: string;
 }
 
 interface LeaveTournamentInput {
@@ -84,12 +85,14 @@ export class RegistrationService {
             }
           },
           update: {
-            displayName: sanitizeUserText(input.displayName, 80)
+            displayName: sanitizeUserText(input.displayName, 80),
+            opggProfile: sanitizeUserText(input.opggProfile, 120)
           },
           create: {
             guildId: input.guildId,
             discordUserId: input.actorUserId,
-            displayName: sanitizeUserText(input.displayName, 80)
+            displayName: sanitizeUserText(input.displayName, 80),
+            opggProfile: sanitizeUserText(input.opggProfile, 120)
           }
         });
 
@@ -193,7 +196,8 @@ export class RegistrationService {
           targetType: "Registration",
           targetId: registration.id,
           metadataJson: {
-            mode: "ACTIVE"
+            mode: "ACTIVE",
+            opggProfile: sanitizeUserText(input.opggProfile, 120)
           }
         });
 

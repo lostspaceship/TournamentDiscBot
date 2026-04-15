@@ -2,17 +2,26 @@ import type { CacheType, ChatInputCommandInteraction, Interaction } from "discor
 
 import type { BootstrapContext } from "./types.js";
 import { AppError } from "../utils/errors.js";
+import { isUnknownInteractionError } from "../utils/discord-api-errors.js";
 
 const replySafe = async (
   interaction: ChatInputCommandInteraction<CacheType>,
   content: string
 ): Promise<void> => {
-  if (interaction.replied || interaction.deferred) {
-    await interaction.followUp({ content, ephemeral: true });
-    return;
-  }
+  try {
+    if (interaction.replied || interaction.deferred) {
+      await interaction.followUp({ content, ephemeral: true });
+      return;
+    }
 
-  await interaction.reply({ content, ephemeral: true });
+    await interaction.reply({ content, ephemeral: true });
+  } catch (error) {
+    if (isUnknownInteractionError(error)) {
+      return;
+    }
+
+    throw error;
+  }
 };
 
 export const routeInteraction = async (
@@ -67,16 +76,32 @@ export const routeInteraction = async (
     );
 
     if (interaction.isRepliable()) {
-      if (interaction.replied || interaction.deferred) {
-        await interaction.followUp({
-          content: message,
-          ephemeral: true
-        });
-      } else {
-        await interaction.reply({
-          content: message,
-          ephemeral: true
-        });
+      try {
+        if (interaction.replied || interaction.deferred) {
+          await interaction.followUp({
+            content: message,
+            ephemeral: true
+          });
+        } else {
+          await interaction.reply({
+            content: message,
+            ephemeral: true
+          });
+        }
+      } catch (replyError) {
+        if (isUnknownInteractionError(replyError)) {
+          context.logger.warn(
+            {
+              interactionId: interaction.id,
+              guildId: interaction.guildId,
+              userId: interaction.user?.id
+            },
+            "Interaction expired before an error reply could be sent"
+          );
+          return;
+        }
+
+        throw replyError;
       }
     }
   }

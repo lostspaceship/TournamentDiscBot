@@ -1,7 +1,5 @@
 import {
   AuditAction,
-  BracketType,
-  MatchStatus,
   Prisma,
   RegistrationStatus,
   SeedingMethod,
@@ -12,7 +10,7 @@ import {
 import { prisma } from "../config/prisma.js";
 import { BracketEngineFactory } from "../domain/bracket/engine.js";
 import { seedEntrants } from "../domain/bracket/seeding.js";
-import type { BracketSnapshot, SeededEntrant } from "../domain/bracket/types.js";
+import type { SeededEntrant } from "../domain/bracket/types.js";
 import { TournamentStateMachine } from "../domain/tournament/state-machine.js";
 import type {
   TournamentAction as DomainTournamentAction,
@@ -22,21 +20,21 @@ import type {
 import { GuildConfigRepository } from "../repositories/guild-config-repository.js";
 import { TournamentRepository } from "../repositories/tournament-repository.js";
 import { buildSeededRegistrations, getEligibleRegistrationsForBracket } from "./support/bracket-snapshot.js";
+import { persistBracketSnapshotTx } from "./support/bracket-persistence.js";
 import type { BracketSyncTarget } from "./support/bracket-sync-target.js";
 import { lockTournamentTx, writeAuditLogTx } from "./support/transaction-utils.js";
 import { ConflictError, NotFoundError } from "../utils/errors.js";
 import { sanitizeUserText } from "../utils/sanitize.js";
+import { slugify } from "../utils/slug.js";
 
 interface CreateTournamentInput {
   guildId: string;
   actorUserId: string;
   name: string;
-  description?: string | null;
+  announcementChannelId: string;
   format: TournamentFormat;
   maxParticipants: number;
   bestOfDefault: number;
-  requireCheckIn?: boolean;
-  allowWaitlist?: boolean;
 }
 
 interface ConfigTournamentInput {
@@ -83,19 +81,41 @@ export class AdminTournamentService {
     const guildConfig = await this.guildConfigRepository.getOrCreate(input.guildId);
 
     const tournament = await prisma.$transaction(async (tx) => {
+      const baseSlug = slugify(input.name);
+      const existingSlugs = await tx.tournament.findMany({
+        where: {
+          guildId: input.guildId,
+          slug: {
+            startsWith: baseSlug
+          }
+        },
+        select: { slug: true }
+      });
+      const existingSlugSet = new Set(existingSlugs.map((entry) => entry.slug));
+      let slug = baseSlug;
+      let suffix = 2;
+      while (existingSlugSet.has(slug)) {
+        slug = `${baseSlug}-${suffix}`;
+        suffix += 1;
+      }
+
       const created = await tx.tournament.create({
         data: {
           guildConfigId: guildConfig.id,
           guildId: input.guildId,
           createdByUserId: input.actorUserId,
           name: sanitizeUserText(input.name, 80),
-          description: input.description ? sanitizeUserText(input.description, 500) : null,
+          slug,
+          gameTitle: null,
+          description: null,
+          status: TournamentStatus.REGISTRATION_OPEN,
           format: input.format,
           maxParticipants: input.maxParticipants,
           bestOfDefault: input.bestOfDefault,
-          requireCheckIn: input.requireCheckIn ?? false,
-          allowWaitlist: input.allowWaitlist ?? true,
-          bracketMessageChannelId: guildConfig.tournamentAnnouncementChannelId,
+          requireCheckIn: false,
+          allowWaitlist: false,
+          infoMessageChannelId: input.announcementChannelId,
+          bracketMessageChannelId: input.announcementChannelId,
           settings: {
             create: {
               seedingMethod: SeedingMethod.RANDOM,
@@ -112,6 +132,18 @@ export class AdminTournamentService {
         guildId: input.guildId,
         actorUserId: input.actorUserId,
         action: AuditAction.TOURNAMENT_CREATED,
+        targetType: "Tournament",
+        targetId: created.id,
+        metadataJson: {
+          announcementChannelId: input.announcementChannelId
+        }
+      });
+
+      await writeAuditLogTx(tx, {
+        tournamentId: created.id,
+        guildId: input.guildId,
+        actorUserId: input.actorUserId,
+        action: AuditAction.TOURNAMENT_OPENED,
         targetType: "Tournament",
         targetId: created.id
       });
@@ -211,6 +243,15 @@ export class AdminTournamentService {
         throw new ConflictError("A bracket already exists for this tournament.");
       }
 
+      if (tournament.requireCheckIn && eligibleRegistrations.length < 2) {
+        const activeRegistrationCount = tournament.registrations.filter(
+          (entry) => entry.status === RegistrationStatus.ACTIVE
+        ).length;
+        throw new ConflictError(
+          `This tournament requires check-in. Only ${eligibleRegistrations.length} of ${activeRegistrationCount} active players have checked in.`
+        );
+      }
+
       const nextStatus = this.resolveNextStatus(
         tournament.status,
         "START",
@@ -242,7 +283,7 @@ export class AdminTournamentService {
         });
       }
 
-      await this.persistBracketSnapshotTx(tx, tournament.id, snapshot);
+      await persistBracketSnapshotTx(tx, tournament.id, snapshot);
 
       const tournamentUpdateData: Prisma.TournamentUpdateInput = {
         status: nextStatus,
@@ -404,6 +445,10 @@ export class AdminTournamentService {
     return tournament;
   }
 
+  public async resolveTournamentReference(guildId: string, reference: string): Promise<string | null> {
+    return this.tournamentRepository.resolveTournamentReference(guildId, reference);
+  }
+
   private async updateParticipantModeration(
     input: ModerationInput,
     status: RegistrationStatus,
@@ -507,100 +552,6 @@ export class AdminTournamentService {
       ...entry,
       id: entry.id
     }));
-  }
-
-  private async persistBracketSnapshotTx(
-    tx: Prisma.TransactionClient,
-    tournamentId: string,
-    snapshot: BracketSnapshot
-  ): Promise<void> {
-    await tx.match.deleteMany({ where: { tournamentId } });
-    await tx.bracket.deleteMany({ where: { tournamentId } });
-
-    const deferredLinks: Array<{
-      id: string;
-      nextMatchId: string | null;
-      nextMatchSlot: number | null;
-      loserNextMatchId: string | null;
-      loserNextMatchSlot: number | null;
-      resetOfMatchId: string | null;
-    }> = [];
-
-    for (const bracketType of [BracketType.WINNERS, BracketType.LOSERS, BracketType.GRAND_FINALS]) {
-      const relevantRounds = snapshot.rounds.filter((round) => {
-        if (bracketType === BracketType.WINNERS) return round.side === "WINNERS";
-        if (bracketType === BracketType.LOSERS) return round.side === "LOSERS";
-        return round.side === "GRAND_FINALS";
-      });
-
-      if (relevantRounds.length === 0) continue;
-
-      const bracket = await tx.bracket.create({
-        data: {
-          tournamentId,
-          type: bracketType
-        }
-      });
-
-      for (const round of relevantRounds) {
-        const createdRound = await tx.round.create({
-          data: {
-            bracketId: bracket.id,
-            roundNumber: round.roundNumber,
-            name: round.name
-          }
-        });
-
-        for (const matchId of round.matchIds) {
-          const match = snapshot.matches[matchId]!;
-          await tx.match.create({
-            data: {
-              id: match.id,
-              roundId: createdRound.id,
-              tournamentId,
-              sequence: match.sequence,
-              bracketType: bracketType,
-              bestOf: match.bestOf,
-              player1RegistrationId: match.slots[0].entrantId,
-              player2RegistrationId: match.slots[1].entrantId,
-              status:
-                match.status === "READY"
-                  ? MatchStatus.READY
-                  : match.status === "COMPLETED"
-                    ? MatchStatus.COMPLETED
-                    : match.status === "CANCELLED"
-                      ? MatchStatus.CANCELLED
-                      : MatchStatus.PENDING,
-              winnerRegistrationId: match.winnerId,
-              loserRegistrationId: match.loserId,
-              completedAt: match.status === "COMPLETED" ? new Date() : null
-            }
-          });
-
-          deferredLinks.push({
-            id: match.id,
-            nextMatchId: match.nextMatchId,
-            nextMatchSlot: match.nextMatchSlot,
-            loserNextMatchId: match.loserNextMatchId,
-            loserNextMatchSlot: match.loserNextMatchSlot,
-            resetOfMatchId: match.resetOfMatchId
-          });
-        }
-      }
-    }
-
-    for (const link of deferredLinks) {
-      await tx.match.update({
-        where: { id: link.id },
-        data: {
-          nextMatchId: link.nextMatchId,
-          nextMatchSlot: link.nextMatchSlot,
-          loserNextMatchId: link.loserNextMatchId,
-          loserNextMatchSlot: link.loserNextMatchSlot,
-          resetOfMatchId: link.resetOfMatchId
-        }
-      });
-    }
   }
 
   private async transitionTournamentStatus(args: {
