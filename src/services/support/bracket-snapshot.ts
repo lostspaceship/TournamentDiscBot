@@ -90,13 +90,13 @@ export const buildPersistedSnapshotFromTournament = (
               entrantId: match.player1RegistrationId,
               sourceMatchId: null,
               sourceOutcome: null,
-              isBye: match.player1RegistrationId == null
+              isBye: false
             },
             {
               entrantId: match.player2RegistrationId,
               sourceMatchId: null,
               sourceOutcome: null,
-              isBye: match.player2RegistrationId == null
+              isBye: false
             }
           ],
           winnerId: match.winnerRegistrationId,
@@ -108,6 +108,39 @@ export const buildPersistedSnapshotFromTournament = (
           resetOfMatchId: match.resetOfMatchId
         };
       }
+    }
+  }
+
+  for (const match of Object.values(matches)) {
+    if (match.nextMatchId != null && match.nextMatchSlot != null) {
+      const nextMatch = matches[match.nextMatchId];
+      if (nextMatch) {
+        nextMatch.slots[match.nextMatchSlot] = {
+          ...nextMatch.slots[match.nextMatchSlot],
+          sourceMatchId: match.id,
+          sourceOutcome: "WINNER",
+          isBye: false
+        };
+      }
+    }
+
+    if (match.loserNextMatchId != null && match.loserNextMatchSlot != null) {
+      const loserNextMatch = matches[match.loserNextMatchId];
+      if (loserNextMatch) {
+        loserNextMatch.slots[match.loserNextMatchSlot] = {
+          ...loserNextMatch.slots[match.loserNextMatchSlot],
+          sourceMatchId: match.id,
+          sourceOutcome: "LOSER",
+          isBye: false
+        };
+      }
+    }
+  }
+
+  for (const match of Object.values(matches)) {
+    for (const slot of match.slots) {
+      const unresolvedFeed = slot.sourceMatchId != null;
+      slot.isBye = !unresolvedFeed && slot.entrantId == null;
     }
   }
 

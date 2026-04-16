@@ -58,6 +58,19 @@ export const routeInteraction = async (
         return;
       }
     }
+
+    if (
+      interaction.isButton() ||
+      interaction.isStringSelectMenu() ||
+      interaction.isModalSubmit()
+    ) {
+      const message = "This control is no longer valid. Please refresh the bracket view and try again.";
+      if (interaction.replied || interaction.deferred) {
+        await interaction.followUp({ content: message, ephemeral: true });
+      } else {
+        await interaction.reply({ content: message, ephemeral: true });
+      }
+    }
   } catch (error) {
     const message =
       error instanceof AppError

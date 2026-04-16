@@ -25,7 +25,7 @@ export const reasonedTournamentActionSchema = z.object({
 });
 
 export const createTournamentCommandSchema = z.object({
-  name: z.string().trim().min(3).max(80),
+  name: z.string().trim().min(3).max(80).default("V2 1v1 Viewer Tournament"),
   announcementChannelId: z.string().trim().min(1).max(32),
   format: z.nativeEnum(TournamentFormat).default(TournamentFormat.SINGLE_ELIMINATION),
   maxParticipants: z.number().int().min(2).max(4096).default(256),
@@ -132,9 +132,19 @@ export const reseedCommandSchema = z.object({
   reason: requiredReasonSchema
 });
 
-export const manualAdvanceCommandSchema = z.object({
+export const manualAdvanceCommandSchema = z
+  .object({
+    tournamentId: idSchema,
+    targetUserId: z.string().trim().min(1).max(64).optional(),
+    targetPlayerName: z.string().trim().min(2).max(80).optional()
+  })
+  .refine((value) => Boolean(value.targetUserId) !== Boolean(value.targetPlayerName), {
+    message: "Provide either a Discord user or a player name.",
+    path: ["targetUserId"]
+  });
+
+export const fakePlayersCommandSchema = z.object({
   tournamentId: idSchema,
-  matchId: idSchema,
-  winnerRegistrationId: idSchema,
-  reason: requiredReasonSchema
+  count: z.number().int().min(1).max(64),
+  prefix: z.string().trim().min(1).max(40).optional()
 });

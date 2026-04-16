@@ -134,18 +134,16 @@ export const handleStaffGroup = async (
 
     const parsed = parseInput(manualAdvanceCommandSchema, {
       tournamentId,
-      matchId: interaction.options.getString("match_id", true),
-      winnerRegistrationId: interaction.options.getString("winner_id", true),
-      reason: interaction.options.getString("reason", true)
+      targetUserId: interaction.options.getUser("user")?.id,
+      targetPlayerName: interaction.options.getString("name") ?? undefined
     });
 
-    const result = await context.matchReportingService.manualAdvance({
+    const result = await context.matchReportingService.manualAdvanceBySelection({
       guildId,
       tournamentId: parsed.tournamentId,
       actorUserId: interaction.user.id,
-      matchId: parsed.matchId,
-      winnerRegistrationId: parsed.winnerRegistrationId,
-      reason: parsed.reason,
+      targetUserId: parsed.targetUserId,
+      targetPlayerName: parsed.targetPlayerName,
       idempotencyKey: interaction.id
     });
 

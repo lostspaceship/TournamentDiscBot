@@ -25,15 +25,15 @@ export const tourCommandDefinition = new SlashCommandBuilder()
     subcommand
       .setName("create")
       .setDescription("Create a tournament with a live info post and bracket post")
-      .addStringOption(stringOption("name", "Tournament name", true))
       .addChannelOption((option) =>
         channelOption("channel", "Channel to keep the tournament info and bracket updated", true)(
           option
         ).addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement)
       )
+      .addStringOption(stringOption("name", "Tournament name"))
   )
   .addSubcommand((subcommand) =>
-    addTournamentIdOption(subcommand.setName("config").setDescription("Update tournament configuration"))
+    addTournamentIdOption(subcommand.setName("config").setDescription("Update tournament configuration"), "Tournament name or slug", false)
       .addStringOption((option) =>
         option
           .setName("seeding")
@@ -50,33 +50,42 @@ export const tourCommandDefinition = new SlashCommandBuilder()
       .addBooleanOption(boolOption("allow_withdrawals", "Allow player withdrawals before start"))
   )
   .addSubcommand((subcommand) =>
-    addTournamentIdOption(subcommand.setName("open").setDescription("Open registration"))
+    addTournamentIdOption(subcommand.setName("open").setDescription("Open registration"), "Tournament name or slug", false)
   )
   .addSubcommand((subcommand) =>
-    addTournamentIdOption(subcommand.setName("close").setDescription("Close registration or move to check-in"))
+    subcommand
+      .setName("close")
+      .setDescription("Lock registration and build the bracket")
   )
   .addSubcommand((subcommand) =>
-    addTournamentIdOption(subcommand.setName("start").setDescription("Start the tournament and lock the bracket"))
+    addTournamentIdOption(
+      subcommand
+        .setName("start")
+        .setDescription("Alias for close: lock registration and build the bracket"),
+      "Tournament name or slug",
+      false
+    )
   )
   .addSubcommand((subcommand) =>
-    addTournamentIdOption(subcommand.setName("join").setDescription("Join a tournament"))
+    subcommand.setName("join").setDescription("Join a tournament")
       .addStringOption(stringOption("name", "Name to show on the bracket", true))
       .addStringOption(stringOption("league_ign", "Your League ID, for example test#test", true))
+      .addStringOption(stringOption("tournament_id", "Tournament name or slug"))
   )
   .addSubcommand((subcommand) =>
-    addTournamentIdOption(subcommand.setName("leave").setDescription("Leave a tournament before it starts"))
+    addTournamentIdOption(subcommand.setName("leave").setDescription("Leave a tournament before it starts"), "Tournament name or slug", false)
   )
   .addSubcommand((subcommand) =>
-    addTournamentIdOption(subcommand.setName("checkin").setDescription("Check in for a tournament"))
+    addTournamentIdOption(subcommand.setName("checkin").setDescription("Check in for a tournament"), "Tournament name or slug", false)
   )
   .addSubcommand((subcommand) =>
-    addTournamentIdOption(subcommand.setName("view").setDescription("View tournament overview"))
+    addTournamentIdOption(subcommand.setName("view").setDescription("View tournament overview"), "Tournament name or slug", false)
   )
   .addSubcommand((subcommand) =>
-    addTournamentIdOption(subcommand.setName("participants").setDescription("View tournament participants"))
+    addTournamentIdOption(subcommand.setName("participants").setDescription("View tournament participants"), "Tournament name or slug", false)
   )
   .addSubcommand((subcommand) =>
-    addTournamentIdOption(subcommand.setName("bracket").setDescription("View bracket or preview"))
+    addTournamentIdOption(subcommand.setName("bracket").setDescription("View bracket or preview"), "Tournament name or slug", false)
       .addStringOption((option) =>
         option
           .setName("side")
@@ -95,110 +104,110 @@ export const tourCommandDefinition = new SlashCommandBuilder()
       )
   )
   .addSubcommand((subcommand) =>
-    addTournamentIdOption(subcommand.setName("match").setDescription("View your current match or a specific match"))
+    subcommand.setName("match").setDescription("View your current match or a specific match")
       .addStringOption(stringOption("match_id", "Specific match ID"))
+      .addStringOption(stringOption("tournament_id", "Tournament name or slug"))
   )
   .addSubcommand((subcommand) =>
-    addTournamentIdOption(
-      subcommand
-        .setName("report")
-        .setDescription("Report a match result")
-        .addStringOption(stringOption("match_id", "Match ID", true))
-        .addStringOption(stringOption("winner_id", "Winner registration ID", true))
-        .addStringOption(stringOption("loser_id", "Loser registration ID", true))
-        .addStringOption((option) =>
-          option
-            .setName("outcome")
-            .setDescription("How the match was decided")
-            .setRequired(true)
-            .addChoices(...outcomeChoices)
-        )
-    )
+    subcommand
+      .setName("report")
+      .setDescription("Report a match result")
+      .addStringOption(stringOption("match_id", "Match ID", true))
+      .addStringOption(stringOption("winner_id", "Winner registration ID", true))
+      .addStringOption(stringOption("loser_id", "Loser registration ID", true))
+      .addStringOption((option) =>
+        option
+          .setName("outcome")
+          .setDescription("How the match was decided")
+          .setRequired(true)
+          .addChoices(...outcomeChoices)
+      )
       .addIntegerOption(intOption("winner_score", "Winner score", { minValue: 0, maxValue: 99 }))
       .addIntegerOption(intOption("loser_score", "Loser score", { minValue: 0, maxValue: 99 }))
       .addStringOption(stringOption("reason", "Optional context"))
+      .addStringOption(stringOption("tournament_id", "Tournament name or slug"))
   )
   .addSubcommand((subcommand) =>
-    addTournamentIdOption(subcommand.setName("confirm").setDescription("Confirm a result report"))
+    subcommand.setName("confirm").setDescription("Confirm a result report")
       .addStringOption(stringOption("report_id", "Result report ID", true))
+      .addStringOption(stringOption("tournament_id", "Tournament name or slug"))
   )
   .addSubcommand((subcommand) =>
-    addTournamentIdOption(
-      addRequiredReasonOption(
-        subcommand.setName("dispute").setDescription("Dispute a result report").addStringOption(
-          stringOption("report_id", "Result report ID", true)
+    addRequiredReasonOption(
+      subcommand.setName("dispute").setDescription("Dispute a result report").addStringOption(
+        stringOption("report_id", "Result report ID", true)
+      ),
+      "Reason for disputing the result"
+    ).addStringOption(stringOption("tournament_id", "Tournament name or slug"))
+  )
+  .addSubcommand((subcommand) =>
+    subcommand
+      .setName("advance")
+      .setDescription("Force-advance a player from their current active match")
+      .addUserOption(userOption("user", "Discord user to advance"))
+      .addStringOption(stringOption("name", "Bracket name or fake bot name to advance"))
+  )
+  .addSubcommand((subcommand) =>
+    subcommand
+      .setName("addfake")
+      .setDescription("Temp staff command to add fake players for testing")
+      .addIntegerOption(
+        intOption("count", "How many fake players to add", {
+          minValue: 1,
+          maxValue: 64,
+          required: true
+        })
+      )
+      .addStringOption(stringOption("prefix", "Name prefix for the fake players"))
+  )
+  .addSubcommand((subcommand) =>
+    addRequiredReasonOption(
+      subcommand
+        .setName("dq")
+        .setDescription("Disqualify a participant")
+        .addUserOption(userOption("user", "Participant to disqualify", true)),
+      "Reason for the disqualification"
+    ).addStringOption(stringOption("tournament_id", "Tournament name or slug"))
+  )
+  .addSubcommand((subcommand) =>
+    addRequiredReasonOption(
+      subcommand
+        .setName("drop")
+        .setDescription("Drop a participant")
+        .addUserOption(userOption("user", "Participant to drop", true)),
+      "Reason for dropping the participant"
+    ).addStringOption(stringOption("tournament_id", "Tournament name or slug"))
+  )
+  .addSubcommand((subcommand) =>
+    addRequiredReasonOption(
+      subcommand
+        .setName("reseed")
+        .setDescription("Reseed the tournament before start")
+        .addStringOption((option) =>
+          option
+            .setName("method")
+            .setDescription("New seeding method")
+            .setRequired(true)
+            .addChoices(
+              { name: "Random", value: "RANDOM" },
+              { name: "Manual", value: "MANUAL" },
+              { name: "Rating Based", value: "RATING_BASED" }
+            )
         ),
-        "Reason for disputing the result"
-      )
-    )
+      "Reason for reseeding"
+    ).addStringOption(stringOption("tournament_id", "Tournament name or slug"))
   )
   .addSubcommand((subcommand) =>
-    addTournamentIdOption(
-      addRequiredReasonOption(
-        subcommand
-          .setName("advance")
-          .setDescription("Force-advance the selected player through a match")
-          .addStringOption(stringOption("match_id", "Match ID", true))
-          .addStringOption(stringOption("winner_id", "Winner registration ID", true)),
-        "Reason for the staff advance"
-      )
-    )
+    addRequiredReasonOption(subcommand.setName("cancel").setDescription("Cancel a tournament"), "Reason for cancelling the tournament")
+      .addStringOption(stringOption("tournament_id", "Tournament name or slug"))
   )
   .addSubcommand((subcommand) =>
-    addTournamentIdOption(
-      addRequiredReasonOption(
-        subcommand
-          .setName("dq")
-          .setDescription("Disqualify a participant")
-          .addUserOption(userOption("user", "Participant to disqualify", true)),
-        "Reason for the disqualification"
-      )
-    )
+    subcommand.setName("finish").setDescription("Finalize tournament results")
   )
   .addSubcommand((subcommand) =>
-    addTournamentIdOption(
-      addRequiredReasonOption(
-        subcommand
-          .setName("drop")
-          .setDescription("Drop a participant")
-          .addUserOption(userOption("user", "Participant to drop", true)),
-        "Reason for dropping the participant"
-      )
-    )
+    addTournamentIdOption(subcommand.setName("staff").setDescription("Open the staff panel"), "Tournament name or slug", false)
   )
   .addSubcommand((subcommand) =>
-    addTournamentIdOption(
-      addRequiredReasonOption(
-        subcommand
-          .setName("reseed")
-          .setDescription("Reseed the tournament before start")
-          .addStringOption((option) =>
-            option
-              .setName("method")
-              .setDescription("New seeding method")
-              .setRequired(true)
-              .addChoices(
-                { name: "Random", value: "RANDOM" },
-                { name: "Manual", value: "MANUAL" },
-                { name: "Rating Based", value: "RATING_BASED" }
-              )
-          ),
-        "Reason for reseeding"
-      )
-    )
-  )
-  .addSubcommand((subcommand) =>
-    addTournamentIdOption(
-      addRequiredReasonOption(subcommand.setName("cancel").setDescription("Cancel a tournament"), "Reason for cancelling the tournament")
-    )
-  )
-  .addSubcommand((subcommand) =>
-    addTournamentIdOption(subcommand.setName("finish").setDescription("Finalize tournament results"))
-  )
-  .addSubcommand((subcommand) =>
-    addTournamentIdOption(subcommand.setName("staff").setDescription("Open the staff panel"))
-  )
-  .addSubcommand((subcommand) =>
-    addTournamentIdOption(subcommand.setName("settings").setDescription("View current tournament settings"))
+    addTournamentIdOption(subcommand.setName("settings").setDescription("View current tournament settings"), "Tournament name or slug", false)
   )
   .setDefaultMemberPermissions(PermissionFlagsBits.SendMessages);

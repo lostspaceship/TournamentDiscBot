@@ -47,6 +47,8 @@ const prettyStatus = (value: string): string =>
     .toLowerCase()
     .replace(/(^|\s)\S/g, (match) => match.toUpperCase());
 
+const isDiscordSnowflake = (value: string): boolean => /^\d{17,20}$/.test(value);
+
 const formatParticipantLine = (
   index: number,
   entry: ParticipantsPageView["entries"][number],
@@ -62,8 +64,12 @@ const formatParticipantLine = (
     .join(" | ");
 
   if (!showSeed) {
-    const secondary = [entry.leagueIgn, badges].filter(Boolean).join(" | ");
-    return `**${prefix}** <@${entry.discordUserId}>${secondary ? `\n${secondary}` : ""}`;
+    const identity = isDiscordSnowflake(entry.discordUserId)
+      ? `<@${entry.discordUserId}>`
+      : entry.displayName;
+    const detail = entry.leagueIgn ? ` - ${entry.leagueIgn}` : "";
+    const suffix = badges ? ` | ${badges}` : "";
+    return `**${prefix}** ${identity}${detail}${suffix}`;
   }
 
   return `**${prefix}** ${entry.displayName}${badges ? `\n${badges}` : ""}`;

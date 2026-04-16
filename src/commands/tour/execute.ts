@@ -26,6 +26,7 @@ import {
   confirmResultCommandSchema,
   createTournamentCommandSchema,
   disputeResultCommandSchema,
+  fakePlayersCommandSchema,
   joinTournamentCommandSchema,
   manualAdvanceCommandSchema,
   matchReportCommandSchema,
@@ -42,6 +43,12 @@ export const executeTourCommand = async (
   interaction: ChatInputCommandInteraction,
   context: BootstrapContext
 ): Promise<void> => {
+  const ensureDeferredReply = async (): Promise<void> => {
+    if (!interaction.deferred && !interaction.replied) {
+      await interaction.deferReply({ ephemeral: true });
+    }
+  };
+
   try {
     if (!interaction.guildId) {
       await interaction.reply({ content: "This command can only be used inside a server.", ephemeral: true });
@@ -58,15 +65,15 @@ export const executeTourCommand = async (
     const subcommand = interaction.options.getSubcommand(true);
     const tournamentReference = interaction.options.getString("tournament_id");
     const tournamentId =
-      tournamentReference != null
-        ? await resolveTournamentReference(context, guildId, tournamentReference)
-        : null;
+      subcommand === "create"
+        ? null
+        : await resolveTournamentReference(context, guildId, tournamentReference);
     switch (subcommand) {
       case "create": {
         await context.permissionService.requireMinimumRole(guildId, member, StaffRoleType.TOURNAMENT_STAFF, "command.tour.create");
         const channel = interaction.options.getChannel("channel", true);
         const parsed = parseInput(createTournamentCommandSchema, {
-          name: interaction.options.getString("name", true),
+          name: interaction.options.getString("name") ?? "V2 1v1 Viewer Tournament",
           announcementChannelId: channel.id,
           format: TournamentFormat.SINGLE_ELIMINATION,
           maxParticipants: 256,
@@ -75,7 +82,7 @@ export const executeTourCommand = async (
         const created = await context.adminTournamentService.createTournament({
           guildId,
           actorUserId: interaction.user.id,
-          name: parsed.name,
+          name: parsed.name ?? "V2 1v1 Viewer Tournament",
           announcementChannelId: parsed.announcementChannelId,
           format: parsed.format ?? TournamentFormat.SINGLE_ELIMINATION,
           maxParticipants: parsed.maxParticipants ?? 256,
@@ -148,32 +155,38 @@ export const executeTourCommand = async (
           await interaction.reply({ content: "Registration opened.", ephemeral: true });
           return;
         }
-        if (subcommand === "close") {
-          await context.adminTournamentService.closeTournament({ guildId, tournamentId, actorUserId: interaction.user.id });
-          await interaction.reply({ content: "Registration closed.", ephemeral: true });
+        if (subcommand === "start") {
+          await ensureDeferredReply();
+          await context.adminTournamentService.startTournament({ guildId, tournamentId, actorUserId: interaction.user.id });
+          await interaction.editReply({ content: "Tournament started and the bracket is now locked." });
           return;
         }
-        if (subcommand === "start") {
+        if (subcommand === "close") {
+          await ensureDeferredReply();
           await context.adminTournamentService.startTournament({ guildId, tournamentId, actorUserId: interaction.user.id });
-          await interaction.reply({ content: "Tournament started and the bracket is now locked.", ephemeral: true });
+          await interaction.editReply({
+            content: "Registration closed, the bracket is locked, and the tournament is ready for advances.",
+          });
           return;
         }
         if (subcommand === "finish") {
+          await ensureDeferredReply();
           await context.adminTournamentService.finalizeTournament({ guildId, tournamentId, actorUserId: interaction.user.id });
-          await interaction.reply({ content: "Tournament finalized successfully.", ephemeral: true });
+          await interaction.editReply({ content: "Tournament finalized successfully." });
           return;
         }
         const parsed = parseInput(reasonedTournamentActionSchema, {
           tournamentId,
           reason: interaction.options.getString("reason", true)
         });
+        await ensureDeferredReply();
         await context.adminTournamentService.cancelTournament({
           guildId,
           tournamentId: parsed.tournamentId,
           actorUserId: interaction.user.id,
           reason: parsed.reason
         });
-        await interaction.reply({ content: "Tournament cancelled successfully.", ephemeral: true });
+        await interaction.editReply({ content: "Tournament cancelled successfully." });
         return;
       }
 
@@ -357,6 +370,7 @@ export const executeTourCommand = async (
         return;
       }
 
+      case "addfake":
       case "advance":
       case "dq":
       case "drop":
@@ -376,24 +390,47 @@ export const executeTourCommand = async (
           return;
         }
 
+        if (subcommand === "addfake") {
+          await context.permissionService.requireMinimumRole(guildId, member, StaffRoleType.TOURNAMENT_STAFF, "command.tour.addfake");
+          const parsed = parseInput(fakePlayersCommandSchema, {
+            tournamentId,
+            count: interaction.options.getInteger("count", true),
+            prefix: interaction.options.getString("prefix") ?? undefined
+          });
+          await ensureDeferredReply();
+          const result = await context.registrationService.addFakePlayers({
+            guildId,
+            tournamentId: parsed.tournamentId,
+            actorUserId: interaction.user.id,
+            count: parsed.count,
+            prefix: parsed.prefix
+          });
+          await interaction.editReply({
+            content:
+              result.addedCount <= 6
+                ? `Added ${result.addedCount} fake player${result.addedCount === 1 ? "" : "s"}: ${result.names.join(", ")}.`
+                : `Added ${result.addedCount} fake players. First few: ${result.names.slice(0, 6).join(", ")}.`
+          });
+          return;
+        }
+
         if (subcommand === "advance") {
           await context.permissionService.requireMinimumRole(guildId, member, StaffRoleType.MODERATOR, "command.tour.advance");
           const parsed = parseInput(manualAdvanceCommandSchema, {
             tournamentId,
-            matchId: interaction.options.getString("match_id", true),
-            winnerRegistrationId: interaction.options.getString("winner_id", true),
-            reason: interaction.options.getString("reason", true)
+            targetUserId: interaction.options.getUser("user")?.id,
+            targetPlayerName: interaction.options.getString("name") ?? undefined
           });
-          const result = await context.matchReportingService.manualAdvance({
+          await ensureDeferredReply();
+          const result = await context.matchReportingService.manualAdvanceBySelection({
             guildId,
             tournamentId: parsed.tournamentId,
             actorUserId: interaction.user.id,
-            matchId: parsed.matchId,
-            winnerRegistrationId: parsed.winnerRegistrationId,
-            reason: parsed.reason,
+            targetUserId: parsed.targetUserId,
+            targetPlayerName: parsed.targetPlayerName,
             idempotencyKey: interaction.id
           });
-          await interaction.reply({
+          await interaction.editReply({
             content: result.finalized
               ? `Manual advance applied. Tournament finalized with champion ${result.championRegistrationId}.`
               : "Manual advance applied and bracket updated.",
@@ -411,8 +448,7 @@ export const executeTourCommand = async (
                   .setLabel("Undo Advance")
                   .setStyle(ButtonStyle.Secondary)
               )
-            ],
-            ephemeral: true
+            ]
           });
           return;
         }

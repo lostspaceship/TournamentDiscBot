@@ -1,0 +1,5 @@
+ALTER TABLE "Tournament"
+ADD COLUMN "bracketViewTab" TEXT NOT NULL DEFAULT 'WINNERS';
+
+ALTER TABLE "Tournament"
+ADD COLUMN "bracketViewPage" INTEGER NOT NULL DEFAULT 1;

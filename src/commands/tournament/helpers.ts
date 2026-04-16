@@ -54,8 +54,17 @@ export const replyWithError = async (
 export const resolveTournamentReference = async (
   context: BootstrapContext,
   guildId: string,
-  reference: string
+  reference?: string | null
 ): Promise<string> => {
+  if (!reference || reference.trim().length === 0) {
+    const defaultTournament = await context.adminTournamentService.resolveDefaultTournament(guildId);
+    if (!defaultTournament) {
+      throw new NotFoundError("No active tournament found.");
+    }
+
+    return defaultTournament;
+  }
+
   const resolved = await context.adminTournamentService.resolveTournamentReference(guildId, reference);
 
   if (!resolved) {

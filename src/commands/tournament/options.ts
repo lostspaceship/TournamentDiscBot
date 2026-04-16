@@ -9,10 +9,11 @@ import type {
 
 export const addTournamentIdOption = (
   subcommand: SlashCommandSubcommandBuilder,
-  description = "Tournament name or slug"
+  description = "Tournament name or slug",
+  required = true
 ): SlashCommandSubcommandBuilder =>
   subcommand.addStringOption((option) =>
-    option.setName("tournament_id").setDescription(description).setRequired(true)
+    option.setName("tournament_id").setDescription(description).setRequired(required)
   );
 
 export const addRequiredReasonOption = (

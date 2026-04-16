@@ -10,6 +10,10 @@ export const persistBracketSnapshotTx = async (
   await tx.match.deleteMany({ where: { tournamentId } });
   await tx.bracket.deleteMany({ where: { tournamentId } });
 
+  const persistedMatchIdBySnapshotId = new Map(
+    Object.keys(snapshot.matches).map((matchId) => [matchId, `${tournamentId}:${matchId}`] as const)
+  );
+
   const deferredLinks: Array<{
     id: string;
     nextMatchId: string | null;
@@ -46,9 +50,10 @@ export const persistBracketSnapshotTx = async (
 
       for (const matchId of round.matchIds) {
         const match = snapshot.matches[matchId]!;
+        const persistedMatchId = persistedMatchIdBySnapshotId.get(match.id)!;
         await tx.match.create({
           data: {
-            id: match.id,
+            id: persistedMatchId,
             roundId: createdRound.id,
             tournamentId,
             sequence: match.sequence,
@@ -71,12 +76,18 @@ export const persistBracketSnapshotTx = async (
         });
 
         deferredLinks.push({
-          id: match.id,
-          nextMatchId: match.nextMatchId,
+          id: persistedMatchId,
+          nextMatchId: match.nextMatchId
+            ? persistedMatchIdBySnapshotId.get(match.nextMatchId) ?? null
+            : null,
           nextMatchSlot: match.nextMatchSlot,
-          loserNextMatchId: match.loserNextMatchId,
+          loserNextMatchId: match.loserNextMatchId
+            ? persistedMatchIdBySnapshotId.get(match.loserNextMatchId) ?? null
+            : null,
           loserNextMatchSlot: match.loserNextMatchSlot,
           resetOfMatchId: match.resetOfMatchId
+            ? persistedMatchIdBySnapshotId.get(match.resetOfMatchId) ?? null
+            : null
         });
       }
     }

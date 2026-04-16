@@ -154,6 +154,8 @@ model Tournament {
   bracketMessageChannelId String?
   bracketMessageId   String?
   bracketImageUpdatedAt DateTime?
+  bracketViewTab     String              @default("WINNERS")
+  bracketViewPage    Int                 @default(1)
   startsAt           DateTime?
   startedAt          DateTime?
   completedAt        DateTime?

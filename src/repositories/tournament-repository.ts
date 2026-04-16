@@ -5,6 +5,7 @@ import {
   Prisma,
   RegistrationStatus,
   TournamentStatus,
+  type Tournament as PrismaTournament,
   type Participant,
   type Registration,
   type Tournament
@@ -14,6 +15,14 @@ import { prisma } from "../config/prisma.js";
 import { slugify } from "../utils/slug.js";
 
 export class TournamentRepository {
+  public static readonly ACTIVE_STATUSES: TournamentStatus[] = [
+    TournamentStatus.REGISTRATION_OPEN,
+    TournamentStatus.REGISTRATION_CLOSED,
+    TournamentStatus.CHECK_IN,
+    TournamentStatus.IN_PROGRESS,
+    TournamentStatus.PAUSED
+  ];
+
   public async createTournament(data: Prisma.TournamentCreateInput): Promise<Tournament> {
     return prisma.tournament.create({
       data,
@@ -69,16 +78,39 @@ export class TournamentRepository {
       return byId.id;
     }
 
-    const bySlug = await prisma.tournament.findFirst({
+    const activeByName = await prisma.tournament.findFirst({
       where: {
         guildId,
-        slug: slugify(trimmed)
+        name: {
+          equals: trimmed,
+          mode: "insensitive"
+        },
+        status: {
+          in: TournamentRepository.ACTIVE_STATUSES
+        }
       },
-      select: { id: true }
+      select: { id: true },
+      orderBy: { createdAt: "desc" }
     });
 
-    if (bySlug) {
-      return bySlug.id;
+    if (activeByName) {
+      return activeByName.id;
+    }
+
+    const activeBySlug = await prisma.tournament.findFirst({
+      where: {
+        guildId,
+        slug: slugify(trimmed),
+        status: {
+          in: TournamentRepository.ACTIVE_STATUSES
+        }
+      },
+      select: { id: true },
+      orderBy: { createdAt: "desc" }
+    });
+
+    if (activeBySlug) {
+      return activeBySlug.id;
     }
 
     const byName = await prisma.tournament.findFirst({
@@ -89,10 +121,39 @@ export class TournamentRepository {
           mode: "insensitive"
         }
       },
-      select: { id: true }
+      select: { id: true },
+      orderBy: { createdAt: "desc" }
     });
 
-    return byName?.id ?? null;
+    if (byName) {
+      return byName.id;
+    }
+
+    const bySlug = await prisma.tournament.findFirst({
+      where: {
+        guildId,
+        slug: slugify(trimmed)
+      },
+      select: { id: true },
+      orderBy: { createdAt: "desc" }
+    });
+
+    return bySlug?.id ?? null;
+  }
+
+  public async getLatestActiveTournamentId(guildId: string): Promise<string | null> {
+    const tournament = await prisma.tournament.findFirst({
+      where: {
+        guildId,
+        status: {
+          in: TournamentRepository.ACTIVE_STATUSES
+        }
+      },
+      select: { id: true },
+      orderBy: { createdAt: "desc" }
+    });
+
+    return tournament?.id ?? null;
   }
 
   public async listTournaments(guildId: string, status?: TournamentStatus) {
@@ -110,6 +171,22 @@ export class TournamentRepository {
     return prisma.tournament.update({
       where: { id: tournamentId },
       data
+    });
+  }
+
+  public async updateBracketViewState(
+    tournamentId: string,
+    state: {
+      tab: string;
+      page: number;
+    }
+  ): Promise<PrismaTournament> {
+    return prisma.tournament.update({
+      where: { id: tournamentId },
+      data: {
+        bracketViewTab: state.tab,
+        bracketViewPage: state.page
+      }
     });
   }
 

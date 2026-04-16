@@ -1,7 +1,11 @@
-import { TournamentFormat, TournamentStatus } from "@prisma/client";
+import { MatchStatus, TournamentFormat, TournamentStatus } from "@prisma/client";
 import { describe, expect, it } from "vitest";
 
-import { resolveTournamentBracketSnapshot } from "../src/services/support/bracket-snapshot.js";
+import { BracketEngineFactory } from "../src/domain/bracket/engine.js";
+import {
+  buildPersistedSnapshotFromTournament,
+  resolveTournamentBracketSnapshot
+} from "../src/services/support/bracket-snapshot.js";
 
 const buildTournament = (entrantCount: number) => ({
   id: "t1",
@@ -51,5 +55,94 @@ describe("resolveTournamentBracketSnapshot", () => {
 
     expect(result.mode).toBe("NONE");
     expect(result.snapshot).toBeNull();
+  });
+
+  it("does not treat unresolved future slots as byes after the bracket is persisted", () => {
+    const tournament = {
+      ...buildTournament(4),
+      status: TournamentStatus.IN_PROGRESS,
+      brackets: [
+        {
+          type: "WINNERS",
+          rounds: [
+            {
+              id: "round-1",
+              roundNumber: 1,
+              matches: [
+                {
+                  id: "t1:winners-r1-m1",
+                  bracketType: "WINNERS",
+                  sequence: 1,
+                  bestOf: 3,
+                  status: MatchStatus.READY,
+                  player1RegistrationId: "r1",
+                  player2RegistrationId: "r2",
+                  winnerRegistrationId: null,
+                  loserRegistrationId: null,
+                  nextMatchId: "t1:winners-r2-m1",
+                  nextMatchSlot: 0,
+                  loserNextMatchId: null,
+                  loserNextMatchSlot: null,
+                  resetOfMatchId: null
+                },
+                {
+                  id: "t1:winners-r1-m2",
+                  bracketType: "WINNERS",
+                  sequence: 2,
+                  bestOf: 3,
+                  status: MatchStatus.READY,
+                  player1RegistrationId: "r3",
+                  player2RegistrationId: "r4",
+                  winnerRegistrationId: null,
+                  loserRegistrationId: null,
+                  nextMatchId: "t1:winners-r2-m1",
+                  nextMatchSlot: 1,
+                  loserNextMatchId: null,
+                  loserNextMatchSlot: null,
+                  resetOfMatchId: null
+                }
+              ]
+            },
+            {
+              id: "round-2",
+              roundNumber: 2,
+              matches: [
+                {
+                  id: "t1:winners-r2-m1",
+                  bracketType: "WINNERS",
+                  sequence: 1,
+                  bestOf: 3,
+                  status: MatchStatus.PENDING,
+                  player1RegistrationId: null,
+                  player2RegistrationId: null,
+                  winnerRegistrationId: null,
+                  loserRegistrationId: null,
+                  nextMatchId: null,
+                  nextMatchSlot: null,
+                  loserNextMatchId: null,
+                  loserNextMatchSlot: null,
+                  resetOfMatchId: null
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    };
+
+    const snapshot = buildPersistedSnapshotFromTournament(tournament as never);
+    const engine = BracketEngineFactory.create("SINGLE_ELIMINATION");
+    const afterAdvance = engine.advance(snapshot, {
+      matchId: "t1:winners-r1-m1",
+      winnerId: "r1",
+      loserId: "r2"
+    });
+
+    expect(afterAdvance.finalized).toBe(false);
+    expect(afterAdvance.championId).toBeNull();
+    expect(afterAdvance.snapshot.matches["t1:winners-r2-m1"]?.status).toBe("PENDING");
+    expect(afterAdvance.snapshot.matches["t1:winners-r2-m1"]?.winnerId).toBeNull();
+    expect(afterAdvance.snapshot.matches["t1:winners-r2-m1"]?.slots[0].entrantId).toBe("r1");
+    expect(afterAdvance.snapshot.matches["t1:winners-r2-m1"]?.slots[1].entrantId).toBeNull();
   });
 });

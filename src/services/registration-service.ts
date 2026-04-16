@@ -38,6 +38,14 @@ interface CheckInTournamentInput {
   actorUserId: string;
 }
 
+interface AddFakePlayersInput {
+  guildId: string;
+  tournamentId: string;
+  actorUserId: string;
+  count: number;
+  prefix?: string;
+}
+
 export interface JoinTournamentResult {
   registrationId?: string;
   waitlisted: boolean;
@@ -369,6 +377,121 @@ export class RegistrationService {
       });
     } catch (error) {
       throw mapUniqueConstraintError(error, "You have already checked in.");
+    }
+  }
+
+  public async addFakePlayers(
+    input: AddFakePlayersInput
+  ): Promise<{ addedCount: number; names: string[] }> {
+    try {
+      const result = await prisma.$transaction(async (tx) => {
+        await lockTournamentTx(tx, input.tournamentId);
+
+        const tournament = await tx.tournament.findUnique({
+          where: { id: input.tournamentId },
+          include: {
+            registrations: {
+              include: { participant: true }
+            }
+          }
+        });
+
+        if (!tournament || tournament.guildId !== input.guildId) {
+          throw new NotFoundError("Tournament not found.");
+        }
+
+        if (tournament.status !== TournamentStatus.REGISTRATION_OPEN) {
+          throw new ConflictError("Fake players can only be added while registration is open.");
+        }
+
+        const activeCount = tournament.registrations.filter(
+          (entry) => entry.status === RegistrationStatus.ACTIVE
+        ).length;
+        const remainingSlots = tournament.maxParticipants - activeCount;
+        if (input.count > remainingSlots) {
+          throw new ConflictError(
+            `Only ${remainingSlots} registration slot${remainingSlots === 1 ? "" : "s"} remain in this tournament.`
+          );
+        }
+
+        const fakePrefix = `fake:${tournament.id}:`;
+        const nextFakeIndex =
+          tournament.registrations.reduce((highest, entry) => {
+            if (!entry.participant.discordUserId.startsWith(fakePrefix)) {
+              return highest;
+            }
+
+            const parsed = Number(entry.participant.discordUserId.slice(fakePrefix.length));
+            return Number.isFinite(parsed) ? Math.max(highest, parsed) : highest;
+          }, 0) + 1;
+
+        const baseName = sanitizeUserText(input.prefix ?? "Test Player", 40);
+        const createdNames: string[] = [];
+
+        for (let index = 0; index < input.count; index += 1) {
+          const fakeNumber = nextFakeIndex + index;
+          const displayName = sanitizeUserText(`${baseName} ${fakeNumber}`, 80);
+          const leagueTag = `${baseName.replace(/[^a-zA-Z0-9]/g, "").slice(0, 12) || "Test"}${fakeNumber}#BOT`;
+          const discordUserId = `${fakePrefix}${fakeNumber}`;
+
+          const participant = await tx.participant.upsert({
+            where: {
+              guildId_discordUserId: {
+                guildId: input.guildId,
+                discordUserId
+              }
+            },
+            update: {
+              displayName,
+              opggProfile: leagueTag
+            },
+            create: {
+              guildId: input.guildId,
+              discordUserId,
+              displayName,
+              opggProfile: leagueTag
+            }
+          });
+
+          const registration = await tx.registration.create({
+            data: {
+              tournamentId: tournament.id,
+              participantId: participant.id,
+              registrationKey: crypto
+                .createHash("sha256")
+                .update(`${tournament.id}:${participant.id}`)
+                .digest("hex")
+            }
+          });
+
+          await writeAuditLogTx(tx, {
+            tournamentId: tournament.id,
+            guildId: input.guildId,
+            actorUserId: input.actorUserId,
+            action: AuditAction.PARTICIPANT_JOINED,
+            targetType: "Registration",
+            targetId: registration.id,
+            metadataJson: {
+              mode: "ACTIVE",
+              fakeParticipant: true,
+              displayName,
+              opggProfile: leagueTag
+            }
+          });
+
+          createdNames.push(displayName);
+        }
+
+        return {
+          addedCount: createdNames.length,
+          names: createdNames
+        };
+      });
+
+      await this.bracketSyncTarget?.syncTournamentBracket(input.tournamentId);
+      return result;
+    } catch (error) {
+      throw mapUniqueConstraintError(error, "One or more fake players were already added.");
     }
   }
 }

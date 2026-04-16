@@ -2,6 +2,7 @@ import type { ButtonInteraction, Interaction } from "discord.js";
 
 import type { BootstrapContext, InteractionHandlerModule } from "../bootstrap/types.js";
 import { env } from "../config/env.js";
+import type { BracketTabKey } from "../renderers/bracket-paging.js";
 import { parseSignedCustomId } from "./secure-payload.js";
 import { AppError } from "../utils/errors.js";
 
@@ -16,7 +17,7 @@ export const tournamentBracketHandler: InteractionHandlerModule = {
       const parsed = parseSignedCustomId(interaction.customId, {
         maxAgeMs: env.INTERACTION_TTL_MS
       });
-      return parsed.namespace === "bracket" && (parsed.action === "bp" || parsed.action === "bn");
+      return parsed.namespace === "bracket" && (parsed.action === "bp" || parsed.action === "bn" || parsed.action === "bt");
     } catch {
       return false;
     }
@@ -34,13 +35,15 @@ export const tournamentBracketHandler: InteractionHandlerModule = {
         return;
       }
 
-      const [tournamentId, pageValue] = parsed.entityId.split("|");
+      const [tournamentId, tabValue, pageValue] = parsed.entityId.split("|");
       const page = Number(pageValue);
-      if (!tournamentId || !Number.isInteger(page) || page < 1) {
+      if (!tournamentId || !isTabKey(tabValue) || !Number.isInteger(page) || page < 1) {
         throw new AppError("INVALID_INTERACTION", "This bracket page is invalid.");
       }
 
-      const payload = await context.bracketSyncService.buildBracketMessagePayload(tournamentId, page);
+      const payload = await context.bracketSyncService.buildBracketMessagePayload(tournamentId, tabValue, page, {
+        persistState: true
+      });
       await interaction.update({
         ...payload,
         attachments: []
@@ -59,3 +62,6 @@ export const tournamentBracketHandler: InteractionHandlerModule = {
     }
   }
 };
+
+const isTabKey = (value: string | undefined): value is BracketTabKey =>
+  value === "WINNERS" || value === "LOSERS" || value === "FINALS" || value === "PLACEMENTS";

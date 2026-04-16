@@ -71,6 +71,13 @@ interface ManualAdvanceInput extends MatchActionInput {
   idempotencyKey: string;
 }
 
+interface ManualAdvanceSelectionInput extends MatchActionInput {
+  targetUserId?: string;
+  targetPlayerName?: string;
+  reason?: string;
+  idempotencyKey: string;
+}
+
 interface UndoManualAdvanceInput extends MatchActionInput {
   reportId: string;
 }
@@ -418,54 +425,59 @@ export class MatchReportingService {
 
         const tournament = await this.loadTournamentTx(tx, input.tournamentId, input.guildId);
         const match = this.requireMatchRecord(tournament, input.matchId);
-        const snapshotBefore = buildPersistedSnapshotFromTournament(tournament);
+        return this.applyManualAdvanceTx(tx, tournament, match, input.winnerRegistrationId, {
+          actorUserId: input.actorUserId,
+          reason: input.reason,
+          idempotencyKey: input.idempotencyKey
+        });
+      });
+      await this.bracketSyncTarget?.syncTournamentBracket(input.tournamentId);
+      return result;
+    } catch (error) {
+      throw mapUniqueConstraintError(error, "This manual advancement was already processed.");
+    }
+  }
+
+  public async manualAdvanceBySelection(input: ManualAdvanceSelectionInput) {
+    try {
+      const result = await prisma.$transaction(async (tx) => {
+        await lockTournamentTx(tx, input.tournamentId);
+        const tournament = await this.loadTournamentTx(tx, input.tournamentId, input.guildId);
+
+        if (tournament.brackets.length === 0) {
+          throw new ConflictError("The bracket is not locked yet. Run /tour close first.");
+        }
 
         this.validateTournamentIsActive(tournament);
-        this.validateMatchReportableOrAwaiting(match);
 
-        const assignedRegistrations = [match.player1RegistrationId, match.player2RegistrationId].filter(
-          (entry): entry is string => entry != null
-        );
+        const targetRegistration = this.findRegistrationForManualAdvance(tournament, input);
+        const candidateMatches = tournament.brackets
+          .flatMap((bracket) => bracket.rounds)
+          .flatMap((round) => round.matches)
+          .filter(
+            (match) =>
+              (match.status === MatchStatus.READY || match.status === MatchStatus.DISPUTED) &&
+              (match.player1RegistrationId === targetRegistration.id ||
+                match.player2RegistrationId === targetRegistration.id)
+          );
 
-        if (assignedRegistrations.length !== 2) {
-          throw new ConflictError("Manual advancement requires two assigned participants.");
+        if (candidateMatches.length === 0) {
+          throw new NotFoundError("No active match was found for that player.");
         }
 
-        if (!assignedRegistrations.includes(input.winnerRegistrationId)) {
-          throw new ValidationError("The selected winner is not assigned to this match.");
+        if (candidateMatches.length > 1) {
+          throw new ConflictError("That player is assigned to multiple active matches. Use a more specific flow.");
         }
 
-        const loserRegistrationId = assignedRegistrations.find(
-          (entry) => entry !== input.winnerRegistrationId
-        );
+        const match = candidateMatches[0]!;
+        await lockMatchTx(tx, match.id);
 
-        if (!loserRegistrationId) {
-          throw new ConflictError("The losing participant could not be resolved for this match.");
-        }
-
-        const createdReport = await tx.resultReport.create({
-          data: {
-            tournamentId: tournament.id,
-            matchId: match.id,
-            submittedByUserId: input.actorUserId,
-            reporterRegistrationId: null,
-            proposedWinnerRegistrationId: input.winnerRegistrationId,
-            outcomeType: MatchOutcomeType.WALKOVER,
-            status: MatchStatus.CONFIRMED,
-            reason: sanitizeUserText(input.reason),
-            confirmedByUserId: input.actorUserId,
-            idempotencyKey: input.idempotencyKey
-          }
-        });
-
-        return this.applyConfirmedOutcomeTx(tx, tournament, match, createdReport, {
+        return this.applyManualAdvanceTx(tx, tournament, match, targetRegistration.id, {
           actorUserId: input.actorUserId,
-          auditAction: AuditAction.MANUAL_ADVANCE,
-          auditReason: sanitizeUserText(input.reason),
-          additionalMetadata: {
-            snapshotBefore: snapshotBefore as unknown as Prisma.JsonObject,
-            sourceMatchId: match.id
-          } as Prisma.JsonObject
+          reason:
+            input.reason ??
+            `Manual staff advance for ${targetRegistration.participant.displayName}`,
+          idempotencyKey: input.idempotencyKey
         });
       });
       await this.bracketSyncTarget?.syncTournamentBracket(input.tournamentId);
@@ -703,6 +715,60 @@ export class MatchReportingService {
     };
   }
 
+  private async applyManualAdvanceTx(
+    tx: TransactionClient,
+    tournament: TournamentWithRelations,
+    match: TournamentWithRelations["brackets"][number]["rounds"][number]["matches"][number],
+    winnerRegistrationId: string,
+    options: {
+      actorUserId: string;
+      reason: string;
+      idempotencyKey: string;
+    }
+  ) {
+    const snapshotBefore = buildPersistedSnapshotFromTournament(tournament);
+
+    this.validateTournamentIsActive(tournament);
+    this.validateMatchReportableOrAwaiting(match);
+
+    const assignedRegistrations = [match.player1RegistrationId, match.player2RegistrationId].filter(
+      (entry): entry is string => entry != null
+    );
+
+    if (assignedRegistrations.length !== 2) {
+      throw new ConflictError("Manual advancement requires two assigned participants.");
+    }
+
+    if (!assignedRegistrations.includes(winnerRegistrationId)) {
+      throw new ValidationError("The selected winner is not assigned to this match.");
+    }
+
+    const createdReport = await tx.resultReport.create({
+      data: {
+        tournamentId: tournament.id,
+        matchId: match.id,
+        submittedByUserId: options.actorUserId,
+        reporterRegistrationId: null,
+        proposedWinnerRegistrationId: winnerRegistrationId,
+        outcomeType: MatchOutcomeType.WALKOVER,
+        status: MatchStatus.CONFIRMED,
+        reason: sanitizeUserText(options.reason),
+        confirmedByUserId: options.actorUserId,
+        idempotencyKey: options.idempotencyKey
+      }
+    });
+
+    return this.applyConfirmedOutcomeTx(tx, tournament, match, createdReport, {
+      actorUserId: options.actorUserId,
+      auditAction: AuditAction.MANUAL_ADVANCE,
+      auditReason: sanitizeUserText(options.reason),
+      additionalMetadata: {
+        snapshotBefore: snapshotBefore as unknown as Prisma.JsonObject,
+        sourceMatchId: match.id
+      } as Prisma.JsonObject
+    });
+  }
+
   private matchNodeToUpdate(match: MatchNode): Prisma.MatchUpdateInput {
     return {
       player1RegistrationId: match.slots[0].entrantId,
@@ -931,6 +997,67 @@ export class MatchReportingService {
     }
 
     return registration;
+  }
+
+  private findRegistrationForManualAdvance(
+    tournament: TournamentWithRelations,
+    input: Pick<ManualAdvanceSelectionInput, "targetUserId" | "targetPlayerName">
+  ) {
+    const activeRegistrations = tournament.registrations.filter(
+      (entry) => entry.status === RegistrationStatus.ACTIVE
+    );
+    const activeMatchRegistrationIds = new Set(
+      tournament.brackets
+        .flatMap((bracket) => bracket.rounds)
+        .flatMap((round) => round.matches)
+        .filter(
+          (match) => match.status === MatchStatus.READY || match.status === MatchStatus.DISPUTED
+        )
+        .flatMap((match) => [match.player1RegistrationId, match.player2RegistrationId])
+        .filter((entry): entry is string => entry != null)
+    );
+    const advanceableRegistrations = activeRegistrations.filter((entry) =>
+      activeMatchRegistrationIds.has(entry.id)
+    );
+
+    if (input.targetUserId) {
+      const registration = advanceableRegistrations.find(
+        (entry) => entry.participant.discordUserId === input.targetUserId
+      );
+
+      if (!registration) {
+        throw new NotFoundError("That Discord user is not in an advanceable match right now.");
+      }
+
+      return registration;
+    }
+
+    const targetPlayerName = input.targetPlayerName?.trim().toLowerCase();
+    const exactMatches = advanceableRegistrations.filter(
+      (entry) => entry.participant.displayName.trim().toLowerCase() === targetPlayerName
+    );
+
+    if (exactMatches.length === 1) {
+      return exactMatches[0]!;
+    }
+
+    if (exactMatches.length > 1) {
+      throw new ConflictError("Multiple advanceable players matched that name. Use the Discord user option instead.");
+    }
+
+    const partialMatches = advanceableRegistrations.filter((entry) =>
+      entry.participant.displayName.trim().toLowerCase().includes(targetPlayerName ?? "")
+    );
+
+    if (partialMatches.length === 0) {
+      throw new NotFoundError("No advanceable player matched that name.");
+    }
+
+    if (partialMatches.length > 1) {
+      throw new ConflictError("Multiple advanceable players matched that name. Use a more specific name or the Discord user option.");
+    }
+
+    return partialMatches[0]!;
   }
 
   private requireMatchRecord(tournament: TournamentWithRelations, matchId: string) {

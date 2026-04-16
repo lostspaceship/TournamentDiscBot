@@ -28,6 +28,10 @@ export class InteractionGuard {
       throw new ConflictError("This action is only available in a guild.");
     }
 
+    if (!interaction.isChatInputCommand() && !interaction.isAutocomplete()) {
+      return;
+    }
+
     const commandName =
       interaction.isChatInputCommand() || interaction.isAutocomplete()
         ? interaction.commandName
@@ -69,6 +73,10 @@ export class InteractionGuard {
   private assertRateLimit(interaction: BaseInteraction): void {
     if (!interaction.guildId || !interaction.user) {
       throw new ConflictError("This action is only available in a guild.");
+    }
+
+    if (!interaction.isChatInputCommand() && !interaction.isAutocomplete()) {
+      return;
     }
 
     const now = Date.now();

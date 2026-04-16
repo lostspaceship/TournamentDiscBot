@@ -29,7 +29,7 @@ export const handleLifecycleGroup = async (
   switch (subcommand) {
     case "create": {
       const parsed = parseInput(createTournamentCommandSchema, {
-        name: interaction.options.getString("name", true),
+        name: interaction.options.getString("name") ?? "V2 1v1 Viewer Tournament",
         announcementChannelId: interaction.options.getChannel("channel", true).id,
         format: TournamentFormat.SINGLE_ELIMINATION,
         maxParticipants: 256,
@@ -39,7 +39,7 @@ export const handleLifecycleGroup = async (
       const created = await context.adminTournamentService.createTournament({
         guildId,
         actorUserId: interaction.user.id,
-        name: parsed.name,
+        name: parsed.name ?? "V2 1v1 Viewer Tournament",
         announcementChannelId: parsed.announcementChannelId,
         format: parsed.format ?? TournamentFormat.SINGLE_ELIMINATION,
         maxParticipants: parsed.maxParticipants ?? 256,

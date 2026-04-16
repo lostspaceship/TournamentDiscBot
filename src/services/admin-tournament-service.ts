@@ -9,6 +9,7 @@ import {
 
 import { prisma } from "../config/prisma.js";
 import { BracketEngineFactory } from "../domain/bracket/engine.js";
+import { DomainConflictError, DomainValidationError } from "../domain/errors.js";
 import { seedEntrants } from "../domain/bracket/seeding.js";
 import type { SeededEntrant } from "../domain/bracket/types.js";
 import { TournamentStateMachine } from "../domain/tournament/state-machine.js";
@@ -23,7 +24,7 @@ import { buildSeededRegistrations, getEligibleRegistrationsForBracket } from "./
 import { persistBracketSnapshotTx } from "./support/bracket-persistence.js";
 import type { BracketSyncTarget } from "./support/bracket-sync-target.js";
 import { lockTournamentTx, writeAuditLogTx } from "./support/transaction-utils.js";
-import { ConflictError, NotFoundError } from "../utils/errors.js";
+import { ConflictError, NotFoundError, ValidationError } from "../utils/errors.js";
 import { sanitizeUserText } from "../utils/sanitize.js";
 import { slugify } from "../utils/slug.js";
 
@@ -81,6 +82,27 @@ export class AdminTournamentService {
     const guildConfig = await this.guildConfigRepository.getOrCreate(input.guildId);
 
     const tournament = await prisma.$transaction(async (tx) => {
+      const existingActiveTournament = await tx.tournament.findFirst({
+        where: {
+          guildId: input.guildId,
+          status: {
+            in: TournamentRepository.ACTIVE_STATUSES
+          }
+        },
+        select: {
+          id: true,
+          name: true,
+          slug: true
+        },
+        orderBy: { createdAt: "desc" }
+      });
+
+      if (existingActiveTournament) {
+        throw new ConflictError(
+          `Only one active tournament is allowed. Finish or cancel ${existingActiveTournament.name} (${existingActiveTournament.slug}) first.`
+        );
+      }
+
       const baseSlug = slugify(input.name);
       const existingSlugs = await tx.tournament.findMany({
         where: {
@@ -449,6 +471,10 @@ export class AdminTournamentService {
     return this.tournamentRepository.resolveTournamentReference(guildId, reference);
   }
 
+  public async resolveDefaultTournament(guildId: string): Promise<string | null> {
+    return this.tournamentRepository.getLatestActiveTournamentId(guildId);
+  }
+
   private async updateParticipantModeration(
     input: ModerationInput,
     status: RegistrationStatus,
@@ -627,11 +653,21 @@ export class AdminTournamentService {
     action: DomainTournamentAction,
     context: TournamentStateContext
   ): TournamentStatus {
-    return this.stateMachine.transition(
-      current as DomainTournamentStatus,
-      action,
-      context
-    ).to as TournamentStatus;
+    try {
+      return this.stateMachine.transition(
+        current as DomainTournamentStatus,
+        action,
+        context
+      ).to as TournamentStatus;
+    } catch (error) {
+      if (error instanceof DomainConflictError) {
+        throw new ConflictError(error.message);
+      }
+      if (error instanceof DomainValidationError) {
+        throw new ValidationError(error.message);
+      }
+      throw error;
+    }
   }
 
   private async loadTournamentTx(

@@ -1,4 +1,12 @@
 import type { BracketSide } from "../domain/bracket/types.js";
+import type {
+  BracketRenderPageModel,
+  BracketRenderTabModel,
+  BracketTabKey,
+  PlacementEntry
+} from "./bracket-paging.js";
+
+export type { BracketRenderPageModel, BracketRenderTabModel, BracketTabKey, PlacementEntry };
 
 export interface BracketRenderMatch {
   id: string;
@@ -9,7 +17,9 @@ export interface BracketRenderMatch {
   player1Name: string;
   player2Name: string;
   winnerName: string | null;
+  scoreLabel: string | null;
   nextMatchId: string | null;
+  originEntrantIds: string[];
 }
 
 export interface BracketRenderRound {
@@ -27,15 +37,18 @@ export interface BracketRenderModel {
   mode: "OFFICIAL" | "PREVIEW" | "NONE";
   updatedLabel: string;
   registrationCount: number;
+  activeTab: BracketTabKey;
+  activeTabLabel: string;
   page: number;
   totalPages: number;
-  pageLabel: string;
-  rounds: BracketRenderRound[];
+  tabs: Array<{
+    key: BracketTabKey;
+    label: string;
+    pageCount: number;
+  }>;
+  pageModel: BracketRenderPageModel;
   placeholder?: {
     bracketSize: number;
-    startRound: number;
-    endRound: number;
-    totalRounds: number;
     entrantNames: string[];
   };
 }
