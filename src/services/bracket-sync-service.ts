@@ -18,8 +18,9 @@ import { buildLiveBracketMessagePayload } from "../renderers/live-bracket-messag
 import type { BracketSyncTarget } from "./support/bracket-sync-target.js";
 import {
   buildOverviewEmbed,
-  buildOverviewWithParticipantsComponents,
-  buildParticipantsEmbed
+  buildOverviewInfoComponents,
+  buildParticipantsEmbed,
+  buildRulesEmbed
 } from "../utils/tournament-view-ui.js";
 
 export class BracketSyncService implements BracketSyncTarget {
@@ -61,7 +62,9 @@ export class BracketSyncService implements BracketSyncTarget {
         return;
       }
 
-      const participantsPage = this.buildParticipantsPage(tournament, 1);
+      const infoTab = this.resolveInfoTab(tournament.infoViewTab);
+      const infoPage = this.resolveInfoPage(tournament.infoViewPage);
+      const participantsPage = this.buildParticipantsPage(tournament, infoTab === "PLAYERS" ? infoPage : 1);
       const overviewEmbed = buildOverviewEmbed({
         id: tournament.id,
         name: tournament.name,
@@ -71,20 +74,52 @@ export class BracketSyncService implements BracketSyncTarget {
         activeCount: participantsPage.totalCount,
         seedingMethod: tournament.settings?.seedingMethod ?? "RANDOM"
       });
-      const infoPayload: MessageCreateOptions & MessageEditOptions = {
-        embeds: [overviewEmbed, buildParticipantsEmbed(participantsPage, "Registered Players", false)],
-        components: buildOverviewWithParticipantsComponents(
-          participantsPage.tournamentId,
-          participantsPage.page,
-          participantsPage.totalPages
-        ),
-        allowedMentions: { parse: [] }
-      };
+      const infoPayload: MessageCreateOptions & MessageEditOptions =
+        infoTab === "RULES"
+          ? {
+              embeds: [
+                overviewEmbed,
+                buildRulesEmbed({
+                  tournamentId: tournament.id,
+                  tournamentName: tournament.name,
+                  sections: [
+                    { key: "mode", title: "Mode", items: tournament.settings?.rulesMode ?? [] },
+                    {
+                      key: "win_conditions",
+                      title: "Win Conditions",
+                      items: tournament.settings?.rulesWinConditions ?? []
+                    },
+                    {
+                      key: "summoners",
+                      title: "Summoners",
+                      items: tournament.settings?.rulesSummoners ?? []
+                    },
+                    {
+                      key: "extra_info",
+                      title: "Extra Info",
+                      items: tournament.settings?.rulesExtraInfo ?? []
+                    }
+                  ]
+                })
+              ],
+              components: buildOverviewInfoComponents(tournament.id, "rules", 1, 1),
+              allowedMentions: { parse: [] }
+            }
+          : {
+              embeds: [overviewEmbed, buildParticipantsEmbed(participantsPage, "Registered Players", false)],
+              components: buildOverviewInfoComponents(
+                participantsPage.tournamentId,
+                "players",
+                participantsPage.page,
+                participantsPage.totalPages
+              ),
+              allowedMentions: { parse: [] }
+            };
 
       const { payload, state } = this.buildBracketPayload(
         tournament,
-        this.resolveStoredTab(tournament.bracketViewTab),
-        tournament.bracketViewPage
+        this.resolveSyncTab(tournament.status, tournament.bracketViewTab),
+        this.resolveSyncPage(tournament.status, tournament.bracketViewPage)
       );
 
       const infoMessage = await this.upsertTrackedMessage(
@@ -103,6 +138,8 @@ export class BracketSyncService implements BracketSyncTarget {
         data: {
           infoMessageChannelId: targetChannelId,
           infoMessageId: infoMessage.id,
+          infoViewTab: infoTab,
+          infoViewPage: infoTab === "RULES" ? 1 : participantsPage.page,
           bracketMessageChannelId: targetChannelId,
           bracketMessageId: postedMessage.id,
           bracketViewTab: state.tab,
@@ -221,6 +258,30 @@ export class BracketSyncService implements BracketSyncTarget {
     }
 
     return "WINNERS";
+  }
+
+  private resolveSyncTab(status: string, storedTab: string): BracketTabKey {
+    if (status === "FINALIZED" || status === "ARCHIVED") {
+      return this.resolveStoredTab(storedTab);
+    }
+
+    return "WINNERS";
+  }
+
+  private resolveSyncPage(status: string, storedPage: number): number {
+    if (status === "FINALIZED" || status === "ARCHIVED") {
+      return storedPage;
+    }
+
+    return 1;
+  }
+
+  private resolveInfoTab(value: string): "PLAYERS" | "RULES" {
+    return value === "RULES" ? "RULES" : "PLAYERS";
+  }
+
+  private resolveInfoPage(value: number): number {
+    return Math.max(1, value);
   }
 
 }

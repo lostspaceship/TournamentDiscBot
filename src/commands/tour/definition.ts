@@ -210,4 +210,33 @@ export const tourCommandDefinition = new SlashCommandBuilder()
   .addSubcommand((subcommand) =>
     addTournamentIdOption(subcommand.setName("settings").setDescription("View current tournament settings"), "Tournament name or slug", false)
   )
+  .addSubcommand((subcommand) =>
+    subcommand
+      .setName("rules")
+      .setDescription("Update a public rules section")
+      .addStringOption((option) =>
+        option
+          .setName("section")
+          .setDescription("Which rules section to update")
+          .setRequired(true)
+          .addChoices(
+            { name: "Mode", value: "MODE" },
+            { name: "Win Conditions", value: "WIN_CONDITIONS" },
+            { name: "Summoners", value: "SUMMONERS" },
+            { name: "Extra Info", value: "EXTRA_INFO" }
+          )
+      )
+      .addStringOption((option) =>
+        option
+          .setName("action")
+          .setDescription("How to update the section")
+          .setRequired(true)
+          .addChoices(
+            { name: "Add Rule", value: "ADD" },
+            { name: "Replace Section", value: "REPLACE" },
+            { name: "Clear Section", value: "CLEAR" }
+          )
+      )
+      .addStringOption(stringOption("value", "Rule text for add or replace"))
+  )
   .setDefaultMemberPermissions(PermissionFlagsBits.SendMessages);

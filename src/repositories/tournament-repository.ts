@@ -190,6 +190,22 @@ export class TournamentRepository {
     });
   }
 
+  public async updateInfoViewState(
+    tournamentId: string,
+    state: {
+      tab: string;
+      page: number;
+    }
+  ): Promise<PrismaTournament> {
+    return prisma.tournament.update({
+      where: { id: tournamentId },
+      data: {
+        infoViewTab: state.tab,
+        infoViewPage: state.page
+      }
+    });
+  }
+
   public async createOrGetParticipant(args: {
     guildId: string;
     discordUserId: string;

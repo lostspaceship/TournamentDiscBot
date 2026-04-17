@@ -13,6 +13,7 @@ import type {
   MatchDetailView,
   OverviewView,
   ParticipantsPageView,
+  TournamentRulesView,
   StaffPanelView
 } from "../services/viewing-service.js";
 
@@ -126,7 +127,7 @@ export const buildParticipantsComponents = (
 ) => {
   const actionPrefix =
     kind === "participants" ? "p" : kind === "waitlist" ? "w" : "o";
-  const nonceBase = `${actionPrefix}${page}`;
+  const nonceBase = `${actionPrefix}${String(page).padStart(5, "0")}`;
   return [
     new ActionRowBuilder<ButtonBuilder>().addComponents(
       new ButtonBuilder()
@@ -135,7 +136,7 @@ export const buildParticipantsComponents = (
             "view",
             `${actionPrefix}p`,
             `${tournamentId}|${Math.max(1, page - 1)}`,
-            `${nonceBase}p`
+            `${nonceBase}prev`
           )
         )
         .setLabel("Previous")
@@ -147,7 +148,7 @@ export const buildParticipantsComponents = (
             "view",
             `${actionPrefix}n`,
             `${tournamentId}|${Math.min(totalPages, page + 1)}`,
-            `${nonceBase}n`
+            `${nonceBase}next`
           )
         )
         .setLabel("Next")
@@ -217,7 +218,79 @@ export const buildOverviewWithParticipantsComponents = (
   tournamentId: string,
   page: number,
   totalPages: number
-) => buildParticipantsComponents(tournamentId, page, totalPages, "overview-participants");
+) => buildOverviewInfoComponents(tournamentId, "players", page, totalPages);
+
+export const buildRulesEmbed = (view: TournamentRulesView): EmbedBuilder =>
+  new EmbedBuilder()
+    .setColor(colors.neutral)
+    .setTitle("Rules")
+    .addFields(
+      view.sections.map((section) => ({
+        name: section.title,
+        value:
+          section.items.length > 0
+            ? section.items.map((item) => `- ${item}`).join("\n")
+            : "Not set.",
+        inline: false
+      }))
+    );
+
+export const buildOverviewInfoComponents = (
+  tournamentId: string,
+  tab: "players" | "rules",
+  page: number,
+  totalPages: number
+) => {
+  const rows: Array<ActionRowBuilder<ButtonBuilder>> = [
+    new ActionRowBuilder<ButtonBuilder>().addComponents(
+      new ButtonBuilder()
+        .setCustomId(
+          buildSignedCustomId("view", "ovp", `${tournamentId}|1`, "ovp001")
+        )
+        .setLabel("Players")
+        .setStyle(tab === "players" ? ButtonStyle.Primary : ButtonStyle.Secondary),
+      new ButtonBuilder()
+        .setCustomId(
+          buildSignedCustomId("view", "ovr", `${tournamentId}|1`, "ovr001")
+        )
+        .setLabel("Rules")
+        .setStyle(tab === "rules" ? ButtonStyle.Primary : ButtonStyle.Secondary)
+    )
+  ];
+
+  if (tab === "players") {
+    rows.push(
+      new ActionRowBuilder<ButtonBuilder>().addComponents(
+        new ButtonBuilder()
+          .setCustomId(
+            buildSignedCustomId(
+              "view",
+              "op",
+              `${tournamentId}|${Math.max(1, page - 1)}`,
+              `ovp${String(page).padStart(4, "0")}p`
+            )
+          )
+          .setLabel("Previous")
+          .setStyle(ButtonStyle.Secondary)
+          .setDisabled(page <= 1),
+        new ButtonBuilder()
+          .setCustomId(
+            buildSignedCustomId(
+              "view",
+              "on",
+              `${tournamentId}|${Math.min(totalPages, page + 1)}`,
+              `ovp${String(page).padStart(4, "0")}n`
+            )
+          )
+          .setLabel("Next")
+          .setStyle(ButtonStyle.Secondary)
+          .setDisabled(page >= totalPages)
+      )
+    );
+  }
+
+  return rows;
+};
 
 export const buildMatchDetailEmbed = (view: MatchDetailView): EmbedBuilder =>
   new EmbedBuilder()

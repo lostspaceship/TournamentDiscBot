@@ -49,6 +49,12 @@ interface ConfigTournamentInput {
   allowWithdrawals?: boolean;
 }
 
+interface UpdateTournamentRulesInput extends SimpleTournamentActionInput {
+  section: "MODE" | "WIN_CONDITIONS" | "SUMMONERS" | "EXTRA_INFO";
+  mode: "ADD" | "REPLACE" | "CLEAR";
+  value?: string;
+}
+
 interface SimpleTournamentActionInput {
   guildId: string;
   tournamentId: string;
@@ -142,7 +148,18 @@ export class AdminTournamentService {
             create: {
               seedingMethod: SeedingMethod.RANDOM,
               hasLosersBracket: input.format === TournamentFormat.DOUBLE_ELIMINATION,
-              grandFinalResetEnabled: input.format === TournamentFormat.DOUBLE_ELIMINATION
+              grandFinalResetEnabled: input.format === TournamentFormat.DOUBLE_ELIMINATION,
+              rulesMode: ["Howling Abyss", "Blind Pick"],
+              rulesWinConditions: [
+                "First Kill",
+                "First Tower",
+                "100 CS",
+                "Bans: Tryndamere, Lee Sin, Renekton, Qiyana, Demolish, Guardian Horn"
+              ],
+              rulesSummoners: ["All Summoners Allowed"],
+              rulesExtraInfo: [
+                "If the player is not joined in the first 3 minutes of the invite, he will automatically be disqualified."
+              ]
             }
           }
         },
@@ -465,6 +482,80 @@ export class AdminTournamentService {
       throw new NotFoundError("Tournament not found.");
     }
     return tournament;
+  }
+
+  public async updateTournamentRules(input: UpdateTournamentRulesInput) {
+    const fieldMap = {
+      MODE: "rulesMode",
+      WIN_CONDITIONS: "rulesWinConditions",
+      SUMMONERS: "rulesSummoners",
+      EXTRA_INFO: "rulesExtraInfo"
+    } as const;
+
+    const field = fieldMap[input.section];
+    const sanitizedValue = input.value ? sanitizeUserText(input.value, 180) : undefined;
+
+    await prisma.$transaction(async (tx) => {
+      await lockTournamentTx(tx, input.tournamentId);
+      const tournament = await this.loadTournamentTx(tx, input.tournamentId, input.guildId);
+
+      const settings = await tx.tournamentSettings.findUnique({
+        where: { tournamentId: tournament.id }
+      });
+
+      if (!settings) {
+        throw new NotFoundError("Tournament settings not found.");
+      }
+
+      const currentItems = [...(settings[field] as string[])];
+      let nextItems: string[];
+
+      if (input.mode === "CLEAR") {
+        nextItems = [];
+      } else if (input.mode === "REPLACE") {
+        if (!sanitizedValue) {
+          throw new ValidationError("A rule value is required for replace.");
+        }
+        nextItems = [sanitizedValue];
+      } else {
+        if (!sanitizedValue) {
+          throw new ValidationError("A rule value is required for add.");
+        }
+        nextItems = [...currentItems, sanitizedValue];
+      }
+
+      await tx.tournamentSettings.update({
+        where: { tournamentId: tournament.id },
+        data: {
+          [field]: nextItems
+        }
+      });
+
+      await tx.tournament.update({
+        where: { id: tournament.id },
+        data: {
+          version: {
+            increment: 1
+          }
+        }
+      });
+
+      await writeAuditLogTx(tx, {
+        tournamentId: tournament.id,
+        guildId: input.guildId,
+        actorUserId: input.actorUserId,
+        action: AuditAction.TOURNAMENT_UPDATED,
+        targetType: "TournamentSettings",
+        targetId: tournament.id,
+        metadataJson: {
+          rulesSection: input.section,
+          rulesMode: input.mode,
+          ruleValue: sanitizedValue ?? null
+        }
+      });
+    });
+
+    await this.bracketSyncTarget?.syncTournamentBracket(input.tournamentId);
   }
 
   public async resolveTournamentReference(guildId: string, reference: string): Promise<string | null> {

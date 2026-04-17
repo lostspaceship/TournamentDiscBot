@@ -16,6 +16,7 @@ import type { InteractionGuard } from "../services/interaction-guard.js";
 import type { MatchReportingService } from "../services/match-reporting-service.js";
 import type { RegistrationService } from "../services/registration-service.js";
 import type { ViewingService } from "../services/viewing-service.js";
+import type { TournamentRepository } from "../repositories/tournament-repository.js";
 
 export interface RuntimeState {
   startedAt: Date;
@@ -45,6 +46,7 @@ export interface BootstrapContext {
   permissionService: PermissionService;
   interactionGuard: InteractionGuard;
   bracketSyncService: BracketSyncService;
+  tournamentRepository: TournamentRepository;
   adminTournamentService: AdminTournamentService;
   registrationService: RegistrationService;
   matchReportingService: MatchReportingService;

@@ -186,6 +186,105 @@ describe("BracketSyncService", () => {
     });
   });
 
+  it("resets live sync back to winners page 1 for active tournaments even if placements was last viewed", async () => {
+    const send = vi
+      .fn()
+      .mockResolvedValueOnce({ id: "info-message-1" })
+      .mockResolvedValueOnce({ id: "bracket-message-1" });
+    const repo = {
+      async getTournament() {
+        return {
+          id: "t1",
+          guildId: "g1",
+          name: "Render Cup",
+          slug: "render-cup",
+          gameTitle: null,
+          status: "REGISTRATION_OPEN",
+          format: "SINGLE_ELIMINATION",
+          bestOfDefault: 3,
+          requireCheckIn: false,
+          allowWaitlist: false,
+          bracketViewTab: "PLACEMENTS",
+          bracketViewPage: 3,
+          infoMessageChannelId: null,
+          infoMessageId: null,
+          bracketMessageChannelId: null,
+          bracketMessageId: null,
+          settings: {
+            seedingMethod: "RANDOM",
+            grandFinalResetEnabled: true
+          },
+          registrations: [
+            {
+              id: "r1",
+              participant: { displayName: "Alpha", rating: null, discordUserId: "100000000000000001", opggProfile: null },
+              participantId: "p1",
+              joinedAt: new Date(),
+              status: "ACTIVE",
+              seed: null,
+              checkIn: null
+            },
+            {
+              id: "r2",
+              participant: { displayName: "Bravo", rating: null, discordUserId: "100000000000000002", opggProfile: null },
+              participantId: "p2",
+              joinedAt: new Date(),
+              status: "ACTIVE",
+              seed: null,
+              checkIn: null
+            }
+          ],
+          brackets: [],
+          waitlistEntries: [],
+          auditLogs: []
+        };
+      }
+    };
+    const guildConfigRepository = {
+      async getOrCreate() {
+        return { tournamentAnnouncementChannelId: "channel-1" };
+      }
+    };
+    const client = {
+      channels: {
+        async fetch() {
+          return {
+            type: 0,
+            isTextBased: () => true,
+            isSendable: () => true,
+            messages: {
+              fetch: vi.fn()
+            },
+            send
+          };
+        }
+      }
+    };
+    const renderer = {
+      renderPng: vi.fn().mockReturnValue(Buffer.from("png"))
+    };
+
+    const service = new BracketSyncService(
+      client as never,
+      { warn: vi.fn(), error: vi.fn() } as never,
+      repo as never,
+      guildConfigRepository as never,
+      renderer as never
+    );
+
+    await service.syncTournamentBracket("t1");
+
+    expect(prismaMock.tournament.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: "t1" },
+        data: expect.objectContaining({
+          bracketViewTab: "WINNERS",
+          bracketViewPage: 1
+        })
+      })
+    );
+  });
+
   it("renders single-entrant preview cards as pending instead of completed wins", async () => {
     const renderer = {
       renderPng: vi.fn().mockReturnValue(Buffer.from("png"))
@@ -265,7 +364,7 @@ describe("BracketSyncService", () => {
     ).toBe(true);
   });
 
-  it("renders only winners round 1 in preview mode instead of downstream empty rounds", async () => {
+  it("renders structural future rounds in preview mode so advancement placeholders stay visible", async () => {
     const renderer = {
       renderPng: vi.fn().mockReturnValue(Buffer.from("png"))
     };
@@ -320,8 +419,14 @@ describe("BracketSyncService", () => {
     await service.buildBracketMessagePayload("t1", "WINNERS", 1, { persistState: false });
 
     const renderModel = renderer.renderPng.mock.calls[0]?.[0];
-    expect(renderModel.pageModel.rounds).toHaveLength(1);
+    expect(renderModel.pageModel.rounds.length).toBeGreaterThan(1);
     expect(renderModel.pageModel.rounds[0].roundNumber).toBe(1);
-    expect(renderModel.pageModel.rounds[0].side).toBe("WINNERS");
+    expect(
+      renderModel.pageModel.rounds
+        .slice(1)
+        .some((round: { matches: Array<{ player1Name: string; player2Name: string }> }) =>
+          round.matches.some((match) => match.player1Name === "" && match.player2Name === "")
+        )
+    ).toBe(true);
   });
 });

@@ -17,6 +17,7 @@ export interface BracketPagingMatch {
   scoreLabel: string | null;
   nextMatchId: string | null;
   originEntrantIds: string[];
+  displayEntrantIds: string[];
 }
 
 export interface BracketPagingRound {
@@ -32,6 +33,7 @@ export interface PlacementEntry {
   label: string;
   displayName: string;
   status: string;
+  group: "PLACED" | "ACTIVE";
 }
 
 export interface BracketRenderPageModel {
@@ -64,12 +66,12 @@ export const buildBracketTabs = (input: {
 
   const winnersPages = buildSidePages("WINNERS", "Winners", winnersRounds, input.entrantOrder);
   if (winnersPages.length > 0) {
-    tabs.push({ key: "WINNERS", label: "Winners", pages: winnersPages });
+    tabs.push({ key: "WINNERS", label: "Winners", pages: relabelPages("Winners", winnersPages) });
   }
 
   const losersPages = buildSidePages("LOSERS", "Losers", losersRounds, input.entrantOrder);
   if (losersPages.length > 0) {
-    tabs.push({ key: "LOSERS", label: "Losers", pages: losersPages });
+    tabs.push({ key: "LOSERS", label: "Losers", pages: relabelPages("Losers", losersPages) });
   }
 
   const finalsPages = buildFinalsPages(input.rounds, input.entrantOrder, input.mode, input.registrationCount);
@@ -92,7 +94,7 @@ export const buildBracketTabs = (input: {
 
   tabs.push({
     key: "PLACEMENTS",
-    label: "Placements",
+    label: "Status",
     pages: buildPlacementPages(input.placements)
   });
 
@@ -109,9 +111,14 @@ const buildSidePages = (
     return [];
   }
 
-  const sideMatches = rounds.flatMap((round) => round.matches);
-  const splitThreshold = Math.ceil(entrantOrder.length / MAX_PARTICIPANTS_PER_PAGE);
-  if (splitThreshold <= 1) {
+  const anchorRound = rounds[0];
+  if (!anchorRound) {
+    return [];
+  }
+
+  const anchorNeedsSplit = anchorRound.matches.length > MAX_MATCHES_PER_PAGE;
+  const entrantNeedsSplit = uniqueDisplayedEntrants(rounds).length > MAX_PARTICIPANTS_PER_PAGE;
+  if (!anchorNeedsSplit && !entrantNeedsSplit) {
     return [
       {
         title: label,
@@ -122,75 +129,33 @@ const buildSidePages = (
     ];
   }
 
-  const indexByEntrantId = new Map(
-    entrantOrder.map((entrantId, index) => [entrantId, index] as const)
-  );
-
-  const rootPages = new Map<number, BracketPagingRound[]>();
-  const sharedMatchesByRound = new Map<string, BracketPagingRound["matches"]>();
-
-  for (const round of rounds) {
-    for (const match of round.matches) {
-      const pageKeys = pageKeysForMatch(match, indexByEntrantId);
-      if (pageKeys.length === 0) {
-        continue;
-      }
-
-      if (pageKeys.length > 1) {
-        const bucketKey = `${round.id}`;
-        const existing = sharedMatchesByRound.get(bucketKey) ?? [];
-        sharedMatchesByRound.set(bucketKey, [...existing, match]);
-        continue;
-      }
-
-      const pageKey = pageKeys[0]!;
-      const existingRounds = rootPages.get(pageKey) ?? [];
-      const roundIndex = existingRounds.findIndex((entry) => entry.id === round.id);
-      if (roundIndex === -1) {
-        existingRounds.push({
+  const anchorBlocks = chunkAnchorRound(anchorRound.matches);
+  const pages = anchorBlocks.map((anchorMatches, pageIndex) => {
+    const pageEntrantIds = [
+      ...new Set(anchorMatches.flatMap((match) => match.originEntrantIds))
+    ];
+    const pageRounds = normalizeRounds(
+      rounds
+        .map((round) => ({
           ...round,
-          matches: [match]
-        });
-      } else {
-        existingRounds[roundIndex] = {
-          ...existingRounds[roundIndex]!,
-          matches: [...existingRounds[roundIndex]!.matches, match]
-        };
-      }
-      rootPages.set(pageKey, existingRounds);
-    }
-  }
+          matches: round.matches.filter((match) =>
+            match.originEntrantIds.length > 0 &&
+            match.originEntrantIds.every((entrantId) => pageEntrantIds.includes(entrantId))
+          )
+        }))
+        .filter((round) => round.matches.length > 0)
+    );
 
-  const pages = [...rootPages.entries()]
-    .sort((left, right) => left[0] - right[0])
-    .map(([pageKey, pageRounds]) => ({
-      title: `${label} Page ${pageKey + 1}`,
-      subtitle: entrantRangeLabel(pageKey, entrantOrder.length),
-      rounds: normalizeRounds(pageRounds),
+    return {
+      title: `${label} Page ${pageIndex + 1}`,
+      subtitle: entrantRangeLabel(pageIndex, entrantOrder.length),
+      rounds: pageRounds,
       entrantIds: uniqueEntrants(pageRounds)
-    }));
-
-  const sharedRounds = normalizeRounds(
-    rounds
-      .map((round) => ({
-        ...round,
-        matches: sharedMatchesByRound.get(round.id) ?? []
-      }))
-      .filter((round) => round.matches.length > 0)
-  );
+    };
+  });
 
   const merged = mergeSparsePages(pages);
-  const split = merged.flatMap((page) => splitDensePage(page));
-  if (sharedRounds.length > 0) {
-    split.push({
-      title: `${label} Finals`,
-      subtitle: "Cross-page championship path",
-      rounds: sharedRounds,
-      entrantIds: uniqueEntrants(sharedRounds)
-    });
-  }
-
-  return split;
+  return relabelPages(label, merged);
 };
 
 const buildFinalsPages = (
@@ -200,22 +165,7 @@ const buildFinalsPages = (
   registrationCount: number
 ): BracketRenderPageModel[] => {
   const finalsRounds = rounds.filter((round) => round.side === "GRAND_FINALS");
-  const winnersCrossRounds = rounds
-    .filter((round) => round.side === "WINNERS")
-    .map((round) => ({
-      ...round,
-      matches: round.matches.filter((match) => spansMultiplePages(match, entrantOrder))
-    }))
-    .filter((round) => round.matches.length > 0);
-  const losersCrossRounds = rounds
-    .filter((round) => round.side === "LOSERS")
-    .map((round) => ({
-      ...round,
-      matches: round.matches.filter((match) => spansMultiplePages(match, entrantOrder))
-    }))
-    .filter((round) => round.matches.length > 0);
-
-  const combinedRounds = normalizeRounds([...winnersCrossRounds, ...losersCrossRounds, ...finalsRounds]);
+  const combinedRounds = normalizeRounds([...finalsRounds]);
   if (combinedRounds.length > 0) {
     return [
       {
@@ -239,7 +189,7 @@ const buildPlacementPages = (placements: PlacementEntry[]): BracketRenderPageMod
   if (placements.length === 0) {
     return [
       {
-        title: "Placements",
+        title: "Status",
         subtitle: "No placements yet",
         rounds: [],
         entrantIds: [],
@@ -248,11 +198,14 @@ const buildPlacementPages = (placements: PlacementEntry[]): BracketRenderPageMod
     ];
   }
 
+  const activeEntries = placements.filter((entry) => entry.group === "ACTIVE");
+  const placedEntries = placements.filter((entry) => entry.group === "PLACED");
+  const orderedEntries = [...activeEntries, ...placedEntries];
   const pages: BracketRenderPageModel[] = [];
-  for (let index = 0; index < placements.length; index += 12) {
-    const pagePlacements = placements.slice(index, index + 12);
+  for (let index = 0; index < orderedEntries.length; index += 16) {
+    const pagePlacements = orderedEntries.slice(index, index + 16);
     pages.push({
-      title: pages.length === 0 ? "Placements" : `Placements Page ${pages.length + 1}`,
+      title: pages.length === 0 ? "Status" : `Status Page ${pages.length + 1}`,
       subtitle: `${pagePlacements[0]!.label} to ${pagePlacements[pagePlacements.length - 1]!.label}`,
       rounds: [],
       entrantIds: [],
@@ -285,18 +238,15 @@ const pageKeysForMatch = (
   return [...keys].sort((left, right) => left - right);
 };
 
-const spansMultiplePages = (
-  match: BracketPagingMatch,
-  entrantOrder: string[]
-): boolean => {
-  const indexByEntrantId = new Map(
-    entrantOrder.map((entrantId, index) => [entrantId, index] as const)
-  );
-  return pageKeysForMatch(match, indexByEntrantId).length > 1;
-};
-
 const uniqueEntrants = (rounds: Array<{ matches: BracketPagingMatch[] }>): string[] =>
   [...new Set(rounds.flatMap((round) => round.matches.flatMap((match) => match.originEntrantIds)))];
+
+const uniqueDisplayedEntrants = (rounds: Array<{ matches: BracketPagingMatch[] }>): string[] =>
+  [
+    ...new Set(
+      rounds.flatMap((round) => round.matches.flatMap((match) => match.displayEntrantIds))
+    )
+  ];
 
 const entrantRangeLabel = (pageIndex: number, totalEntrants: number): string => {
   const start = pageIndex * MAX_PARTICIPANTS_PER_PAGE + 1;
@@ -317,9 +267,15 @@ const mergeSparsePages = (pages: BracketRenderPageModel[]): BracketRenderPageMod
       continue;
     }
 
-    const unionEntrants = new Set([...previous.entrantIds, ...page.entrantIds]);
-    if (unionEntrants.size <= MAX_PARTICIPANTS_PER_PAGE) {
-      previous.rounds = normalizeRounds([...previous.rounds, ...page.rounds]);
+    const unionEntrants = new Set([
+      ...uniqueDisplayedEntrants(previous.rounds),
+      ...uniqueDisplayedEntrants(page.rounds)
+    ]);
+    const mergedRounds = normalizeRounds([...previous.rounds, ...page.rounds]);
+    const anchorMatchCount = mergedRounds[0]?.matches.length ?? 0;
+
+    if (unionEntrants.size <= MAX_PARTICIPANTS_PER_PAGE && anchorMatchCount <= MAX_MATCHES_PER_PAGE) {
+      previous.rounds = mergedRounds;
       previous.entrantIds = [...unionEntrants];
       previous.subtitle = `${previous.subtitle} + ${page.subtitle}`;
       continue;
@@ -365,6 +321,20 @@ const splitDensePage = (page: BracketRenderPageModel): BracketRenderPageModel[] 
 
   return pages;
 };
+
+const chunkAnchorRound = (matches: BracketPagingMatch[]): BracketPagingMatch[][] => {
+  const chunks: BracketPagingMatch[][] = [];
+  for (let index = 0; index < matches.length; index += MAX_MATCHES_PER_PAGE) {
+    chunks.push(matches.slice(index, index + MAX_MATCHES_PER_PAGE));
+  }
+  return chunks;
+};
+
+const relabelPages = (label: string, pages: BracketRenderPageModel[]): BracketRenderPageModel[] =>
+  pages.map((page, index) => ({
+    ...page,
+    title: pages.length === 1 ? label : `${label} Page ${index + 1}`
+  }));
 
 export const collectOriginEntrantIds = (
   snapshot: BracketSnapshot,

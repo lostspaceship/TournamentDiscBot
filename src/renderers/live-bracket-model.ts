@@ -5,7 +5,7 @@ import {
   type BracketTabKey,
   MAX_PARTICIPANTS_PER_PAGE
 } from "./bracket-paging.js";
-import type { BracketRenderModel, BracketRenderRound } from "./types.js";
+import type { BracketRenderModel, BracketRenderRound, BracketRenderTabModel, PlacementEntry } from "./types.js";
 import { resolveTournamentBracketSnapshot } from "../services/support/bracket-snapshot.js";
 
 type TournamentWithBracketData = NonNullable<Awaited<ReturnType<TournamentRepository["getTournament"]>>>;
@@ -67,7 +67,10 @@ export const buildLiveBracketRenderModel = (
                 resolveRenderedSlotName(tournament, snapshot, match, 1, namesByRegistrationId, mode) ?? "",
               winnerName: mode === "PREVIEW" ? null : namesByRegistrationId.get(match.winnerId ?? "") ?? null,
               nextMatchId: match.nextMatchId,
-              originEntrantIds: collectOriginEntrantIds(snapshot, match)
+              originEntrantIds: collectOriginEntrantIds(snapshot, match),
+              displayEntrantIds: match.slots
+                .map((slot) => slot.entrantId)
+                .filter((entrantId): entrantId is string => entrantId != null)
             };
           })
           .filter((match): match is NonNullable<typeof match> => match != null)
@@ -78,13 +81,22 @@ export const buildLiveBracketRenderModel = (
           sideOrder(left.side) - sideOrder(right.side) || left.roundNumber - right.roundNumber
       ) ?? [];
   const visibleRounds =
-    mode === "PREVIEW"
-      ? buildPreviewRounds(allRounds)
-      : allRounds;
+    mode === "PREVIEW" ? buildPreviewRounds(allRounds) : allRounds;
 
-  const placementEntries = tournament.registrations
-    .filter((entry) => entry.placement != null || entry.status === "ACTIVE")
+  const placementEntries: PlacementEntry[] = tournament.registrations
+    .filter((entry) =>
+      entry.placement != null ||
+      entry.status === "ACTIVE" ||
+      entry.status === "ELIMINATED" ||
+      entry.status === "DISQUALIFIED" ||
+      entry.status === "DROPPED"
+    )
     .sort((left, right) => {
+      const leftGroup = left.placement != null || left.status !== "ACTIVE" ? 0 : 1;
+      const rightGroup = right.placement != null || right.status !== "ACTIVE" ? 0 : 1;
+      if (leftGroup !== rightGroup) {
+        return leftGroup - rightGroup;
+      }
       const leftPlacement = left.placement ?? Number.MAX_SAFE_INTEGER;
       const rightPlacement = right.placement ?? Number.MAX_SAFE_INTEGER;
       if (leftPlacement !== rightPlacement) {
@@ -94,13 +106,26 @@ export const buildLiveBracketRenderModel = (
     })
     .map((entry) => ({
       placement: entry.placement ?? 999,
-      label: entry.placement != null ? `${entry.placement}${ordinalSuffix(entry.placement)}` : "Active",
+      label:
+        entry.placement != null
+          ? `${entry.placement}${ordinalSuffix(entry.placement)}`
+          : entry.status === "ACTIVE"
+            ? "Alive"
+            : "Out",
       displayName: entry.participant.displayName,
-      status: entry.placement != null ? "Locked" : "Still alive"
+      status:
+        entry.status === "ACTIVE"
+          ? "Still alive"
+          : entry.placement != null
+            ? "Placed"
+            : prettyPlacementStatus(entry.status),
+      group: (entry.placement != null || entry.status !== "ACTIVE" ? "PLACED" : "ACTIVE") as
+        | "PLACED"
+        | "ACTIVE"
     }));
 
   const entrantOrder = orderedBracketRegistrations.map((entry) => entry.id);
-  const tabs =
+  const tabs: BracketRenderTabModel[] =
     visibleRounds.length > 0
       ? buildBracketTabs({
           snapshot,
@@ -125,10 +150,10 @@ export const buildLiveBracketRenderModel = (
           },
           {
             key: "PLACEMENTS" as const,
-            label: "Placements",
+            label: "Status",
             pages: [
               {
-                title: "Placements",
+                title: "Status",
                 subtitle: "No placements yet",
                 rounds: [],
                 entrantIds: [],
@@ -136,7 +161,7 @@ export const buildLiveBracketRenderModel = (
               }
             ]
           }
-        ];
+        ] satisfies BracketRenderTabModel[];
 
   const selectedTab = tabs.find((entry) => entry.key === tab) ?? tabs[0]!;
   const safePage = Math.min(Math.max(1, page), Math.max(1, selectedTab.pages.length));
@@ -290,6 +315,7 @@ const shouldHideMatchFromRender = (
   mode: "OFFICIAL" | "PREVIEW" | "NONE"
 ): boolean => {
   const entrantCount = match.slots.filter((slot) => slot.entrantId != null).length;
+  const hasStructuralFeed = match.slots.some((slot) => slot.sourceMatchId != null);
   const isImplicitBye =
     entrantCount <= 1 &&
     match.status === "COMPLETED" &&
@@ -300,13 +326,23 @@ const shouldHideMatchFromRender = (
   }
 
   if (mode === "PREVIEW") {
-    return entrantCount === 0;
+    return entrantCount === 0 && !hasStructuralFeed;
   }
 
-  return false;
+  return entrantCount === 0 && !hasStructuralFeed;
 };
 
-const buildPreviewRounds = (rounds: BracketRenderRound[]): BracketRenderRound[] => {
-  const firstWinnersRound = rounds.find((round) => round.side === "WINNERS" && round.roundNumber === 1);
-  return firstWinnersRound ? [firstWinnersRound] : [];
+const prettyPlacementStatus = (status: string): string => {
+  switch (status) {
+    case "DISQUALIFIED":
+      return "Disqualified";
+    case "DROPPED":
+      return "Dropped";
+    case "ELIMINATED":
+      return "Eliminated";
+    default:
+      return status.charAt(0) + status.slice(1).toLowerCase();
+  }
 };
+
+const buildPreviewRounds = (rounds: BracketRenderRound[]): BracketRenderRound[] => rounds;

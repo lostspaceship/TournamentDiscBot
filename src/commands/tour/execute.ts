@@ -13,9 +13,11 @@ import {
   buildBracketRoundEmbed,
   buildMatchDetailEmbed,
   buildOverviewEmbed,
+  buildOverviewInfoComponents,
   buildOverviewWithParticipantsComponents,
   buildParticipantsComponents,
   buildParticipantsEmbed,
+  buildRulesEmbed,
   buildStaffPanelComponents,
   buildStaffPanelEmbed
 } from "../../utils/tournament-view-ui.js";
@@ -34,6 +36,7 @@ import {
   moderationCommandSchema,
   reseedCommandSchema,
   reasonedTournamentActionSchema,
+  tournamentRulesCommandSchema,
   tournamentIdSchema
 } from "../../validators/command-schemas.js";
 import { buildSignedCustomId } from "../../interactions/secure-payload.js";
@@ -190,6 +193,29 @@ export const executeTourCommand = async (
         return;
       }
 
+      case "rules": {
+        if (!tournamentId) {
+          throw new ValidationError("Tournament ID is required.");
+        }
+        await context.permissionService.requireMinimumRole(guildId, member, StaffRoleType.TOURNAMENT_STAFF, "command.tour.rules");
+        const parsed = parseInput(tournamentRulesCommandSchema, {
+          tournamentId,
+          section: interaction.options.getString("section", true),
+          mode: interaction.options.getString("action", true),
+          value: interaction.options.getString("value") ?? undefined
+        });
+        await context.adminTournamentService.updateTournamentRules({
+          guildId,
+          tournamentId: parsed.tournamentId,
+          actorUserId: interaction.user.id,
+          section: parsed.section,
+          mode: parsed.mode,
+          value: parsed.value
+        });
+        await interaction.reply({ content: "Rules updated.", ephemeral: true });
+        return;
+      }
+
       case "join":
       case "leave":
       case "checkin": {
@@ -246,8 +272,9 @@ export const executeTourCommand = async (
         );
         await interaction.reply({
           embeds: [buildOverviewEmbed(overview), buildParticipantsEmbed(participants, "Registered Players", false)],
-          components: buildOverviewWithParticipantsComponents(
+          components: buildOverviewInfoComponents(
             participants.tournamentId,
+            "players",
             participants.page,
             participants.totalPages
           )

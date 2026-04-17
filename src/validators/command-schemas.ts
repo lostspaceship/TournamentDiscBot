@@ -148,3 +148,18 @@ export const fakePlayersCommandSchema = z.object({
   count: z.number().int().min(1).max(64),
   prefix: z.string().trim().min(1).max(40).optional()
 });
+
+export const tournamentRulesCommandSchema = z.object({
+  tournamentId: idSchema,
+  section: z.enum(["MODE", "WIN_CONDITIONS", "SUMMONERS", "EXTRA_INFO"]),
+  mode: z.enum(["ADD", "REPLACE", "CLEAR"]),
+  value: z.string().trim().min(1).max(180).optional()
+}).superRefine((value, ctx) => {
+  if (value.mode !== "CLEAR" && !value.value) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "A rule value is required unless you are clearing the section.",
+      path: ["value"]
+    });
+  }
+});

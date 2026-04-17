@@ -22,6 +22,16 @@ export interface OverviewView {
   seedingMethod: string;
 }
 
+export interface TournamentRulesView {
+  tournamentId: string;
+  tournamentName: string;
+  sections: Array<{
+    key: "mode" | "win_conditions" | "summoners" | "extra_info";
+    title: string;
+    items: string[];
+  }>;
+}
+
 export interface ParticipantsPageView {
   tournamentId: string;
   tournamentName: string;
@@ -171,6 +181,41 @@ export class ViewingService {
       totalPages,
       totalCount: ordered.length,
       entries
+    };
+  }
+
+  public async getRulesView(
+    guildId: string,
+    tournamentId: string
+  ): Promise<TournamentRulesView> {
+    const tournament = await this.requireTournament(guildId, tournamentId);
+    const settings = tournament.settings;
+
+    return {
+      tournamentId: tournament.id,
+      tournamentName: tournament.name,
+      sections: [
+        {
+          key: "mode",
+          title: "Mode",
+          items: settings?.rulesMode ?? []
+        },
+        {
+          key: "win_conditions",
+          title: "Win Conditions",
+          items: settings?.rulesWinConditions ?? []
+        },
+        {
+          key: "summoners",
+          title: "Summoners",
+          items: settings?.rulesSummoners ?? []
+        },
+        {
+          key: "extra_info",
+          title: "Extra Info",
+          items: settings?.rulesExtraInfo ?? []
+        }
+      ]
     };
   }
 

@@ -8,9 +8,10 @@ import {
   buildBracketRoundComponents,
   buildBracketRoundEmbed,
   buildOverviewEmbed,
-  buildOverviewWithParticipantsComponents,
+  buildOverviewInfoComponents,
   buildParticipantsComponents,
   buildParticipantsEmbed,
+  buildRulesEmbed,
   buildStaffPanelComponents,
   buildStaffPanelEmbed
 } from "../utils/tournament-view-ui.js";
@@ -52,9 +53,7 @@ export const tournamentViewHandler: InteractionHandlerModule = {
     }
 
     try {
-      const parsed = parseSignedCustomId(interaction.customId, {
-        maxAgeMs: env.INTERACTION_TTL_MS
-      });
+      const parsed = parseSignedCustomId(interaction.customId);
       return parsed.namespace === "view";
     } catch {
       return false;
@@ -66,9 +65,7 @@ export const tournamentViewHandler: InteractionHandlerModule = {
     }
 
     try {
-      const parsed = parseSignedCustomId(interaction.customId, {
-        maxAgeMs: env.INTERACTION_TTL_MS
-      });
+      const parsed = parseSignedCustomId(interaction.customId);
       if (parsed.namespace !== "view") {
         return;
       }
@@ -90,10 +87,46 @@ export const tournamentViewHandler: InteractionHandlerModule = {
         const page = Number(pageValue);
         const overview = await context.viewingService.getOverview(interaction.guildId!, tournamentId!);
         const view = await context.viewingService.getParticipantsPage(interaction.guildId!, tournamentId!, page);
+        await context.tournamentRepository.updateInfoViewState(tournamentId!, {
+          tab: "PLAYERS",
+          page: view.page
+        });
 
         await interaction.update({
-          embeds: [buildOverviewEmbed(overview), buildParticipantsEmbed(view, "Registered Players")],
-          components: buildOverviewWithParticipantsComponents(view.tournamentId, view.page, view.totalPages)
+          embeds: [buildOverviewEmbed(overview), buildParticipantsEmbed(view, "Registered Players", false)],
+          components: buildOverviewInfoComponents(view.tournamentId, "players", view.page, view.totalPages)
+        });
+        return;
+      }
+
+      if (parsed.action === "ovp") {
+        const [tournamentId] = parsed.entityId.split("|");
+        const overview = await context.viewingService.getOverview(interaction.guildId!, tournamentId!);
+        const view = await context.viewingService.getParticipantsPage(interaction.guildId!, tournamentId!, 1);
+        await context.tournamentRepository.updateInfoViewState(tournamentId!, {
+          tab: "PLAYERS",
+          page: view.page
+        });
+
+        await interaction.update({
+          embeds: [buildOverviewEmbed(overview), buildParticipantsEmbed(view, "Registered Players", false)],
+          components: buildOverviewInfoComponents(view.tournamentId, "players", view.page, view.totalPages)
+        });
+        return;
+      }
+
+      if (parsed.action === "ovr") {
+        const [tournamentId] = parsed.entityId.split("|");
+        const overview = await context.viewingService.getOverview(interaction.guildId!, tournamentId!);
+        const rules = await context.viewingService.getRulesView(interaction.guildId!, tournamentId!);
+        await context.tournamentRepository.updateInfoViewState(tournamentId!, {
+          tab: "RULES",
+          page: 1
+        });
+
+        await interaction.update({
+          embeds: [buildOverviewEmbed(overview), buildRulesEmbed(rules)],
+          components: buildOverviewInfoComponents(tournamentId!, "rules", 1, 1)
         });
         return;
       }

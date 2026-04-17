@@ -75,6 +75,7 @@ const context: BootstrapContext = {
   permissionService,
   interactionGuard,
   bracketSyncService,
+  tournamentRepository,
   adminTournamentService,
   registrationService,
   matchReportingService,

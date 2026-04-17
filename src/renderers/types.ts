@@ -20,6 +20,7 @@ export interface BracketRenderMatch {
   scoreLabel: string | null;
   nextMatchId: string | null;
   originEntrantIds: string[];
+  displayEntrantIds: string[];
 }
 
 export interface BracketRenderRound {

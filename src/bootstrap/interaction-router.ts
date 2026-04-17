@@ -64,7 +64,7 @@ export const routeInteraction = async (
       interaction.isStringSelectMenu() ||
       interaction.isModalSubmit()
     ) {
-      const message = "This control is no longer valid. Please refresh the bracket view and try again.";
+      const message = "This control is no longer valid. Please refresh this message and try again.";
       if (interaction.replied || interaction.deferred) {
         await interaction.followUp({ content: message, ephemeral: true });
       } else {
