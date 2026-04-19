@@ -6,6 +6,7 @@ import {
   buildPersistedSnapshotFromTournament,
   resolveTournamentBracketSnapshot
 } from "../src/services/support/bracket-snapshot.js";
+import { buildLiveBracketRenderModel } from "../src/renderers/live-bracket-model.js";
 
 const buildTournament = (entrantCount: number) => ({
   id: "t1",
@@ -41,13 +42,34 @@ describe("resolveTournamentBracketSnapshot", () => {
     const result = resolveTournamentBracketSnapshot(buildTournament(5) as never);
 
     expect(result.mode).toBe("PREVIEW");
-    expect(result.snapshot?.metadata.bracketSize).toBe(8);
+    expect(result.snapshot?.metadata.bracketSize).toBe(4);
 
     const firstRoundMatches = result.snapshot?.rounds
       .filter((round) => round.side === "WINNERS" && round.roundNumber === 1)[0]
       ?.matchIds.map((matchId) => result.snapshot?.matches[matchId]);
 
-    expect(firstRoundMatches?.some((match) => match?.status === "COMPLETED")).toBe(true);
+    expect(firstRoundMatches).toHaveLength(1);
+    expect(firstRoundMatches?.every((match) => match?.status === "READY")).toBe(true);
+  });
+
+  it("keeps preview on one page even when an odd entrant overflows past sixteen players", () => {
+    const tournament = buildTournament(17);
+
+    const pageOne = buildLiveBracketRenderModel(tournament as never, "WINNERS", 1);
+
+    expect(pageOne.totalPages).toBe(1);
+    expect(pageOne.page).toBe(1);
+    expect(pageOne.pageModel.rounds.map((round) => round.matches.length)).toEqual([1, 8, 4, 2, 1]);
+    expect(pageOne.pageModel.rounds[0]?.matches[0]?.player1Name).not.toBe("");
+    expect(pageOne.pageModel.rounds[0]?.matches[0]?.player2Name).not.toBe("");
+  });
+
+  it("only shows fully paired future preview rounds for uneven entrant counts", () => {
+    const tournament = buildTournament(18);
+
+    const pageOne = buildLiveBracketRenderModel(tournament as never, "WINNERS", 1);
+
+    expect(pageOne.pageModel.rounds.map((round) => round.matches.length)).toEqual([2, 8, 4, 2, 1]);
   });
 
   it("returns no preview when fewer than two eligible entrants exist", () => {

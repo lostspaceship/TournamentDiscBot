@@ -154,7 +154,7 @@ model Tournament {
   bracketMessageChannelId String?
   bracketMessageId   String?
   bracketImageUpdatedAt DateTime?
-  infoViewTab        String              @default("PLAYERS")
+  infoViewTab        String              @default("RULES")
   infoViewPage       Int                 @default(1)
   bracketViewTab     String              @default("WINNERS")
   bracketViewPage    Int                 @default(1)
@@ -198,6 +198,7 @@ model TournamentSettings {
   enableRateSeedPlaceholder    Boolean        @default(false)
   rulesMode                    String[]       @default([])
   rulesWinConditions           String[]       @default([])
+  rulesBans                    String[]       @default([])
   rulesSummoners               String[]       @default([])
   rulesExtraInfo               String[]       @default([])
   createdAt                    DateTime       @default(now())

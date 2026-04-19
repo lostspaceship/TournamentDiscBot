@@ -84,21 +84,128 @@ describe("Bracket engines", () => {
       bestOf: 3
     });
 
-    expect(snapshot.metadata.bracketSize).toBe(8);
+    expect(snapshot.metadata.bracketSize).toBe(4);
     const openingMatches = snapshot.rounds
       .filter((round) => round.side === "WINNERS" && round.roundNumber === 1)[0]!
       .matchIds.map((matchId) => snapshot.matches[matchId]!);
 
-    const autoCompleted = openingMatches.filter((match) => match.status === "COMPLETED");
-    expect(autoCompleted.length).toBeGreaterThan(0);
-    expect(autoCompleted.every((match) => match.winnerId !== null)).toBe(true);
+    expect(openingMatches).toHaveLength(1);
+    expect(openingMatches[0]?.status).toBe("READY");
 
-    const secondRoundReady = snapshot.rounds
+    const mainRound = snapshot.rounds
       .filter((round) => round.side === "WINNERS" && round.roundNumber === 2)[0]!
-      .matchIds.map((matchId) => snapshot.matches[matchId]!)
-      .some((match) => match.slots.some((slot) => slot.entrantId !== null));
+      .matchIds.map((matchId) => snapshot.matches[matchId]!);
 
-    expect(secondRoundReady).toBe(true);
+    expect(mainRound).toHaveLength(2);
+    expect(mainRound.some((match) => match.slots.some((slot) => slot.sourceMatchId != null))).toBe(true);
+  });
+
+  it("keeps exact power-of-two fields as a clean main bracket for 32 entrants", () => {
+    const engine = BracketEngineFactory.create("SINGLE_ELIMINATION");
+    const snapshot = engine.generate({
+      entrants: entrants(32),
+      bestOf: 3
+    });
+
+    expect(snapshot.metadata.bracketSize).toBe(32);
+    expect(snapshot.rounds.filter((round) => round.side === "WINNERS")).toHaveLength(5);
+    expect(snapshot.rounds[0]?.matchIds).toHaveLength(16);
+  });
+
+  it("keeps exact power-of-two fields as a clean main bracket for 64 entrants", () => {
+    const engine = BracketEngineFactory.create("SINGLE_ELIMINATION");
+    const snapshot = engine.generate({
+      entrants: entrants(64),
+      bestOf: 3
+    });
+
+    expect(snapshot.metadata.bracketSize).toBe(64);
+    expect(snapshot.rounds.filter((round) => round.side === "WINNERS")).toHaveLength(6);
+    expect(snapshot.rounds[0]?.matchIds).toHaveLength(32);
+  });
+
+  it("creates one play-in match for 33 entrants and maps it into the 32 bracket", () => {
+    const engine = BracketEngineFactory.create("SINGLE_ELIMINATION");
+    const snapshot = engine.generate({
+      entrants: entrants(33),
+      bestOf: 3
+    });
+
+    expect(snapshot.metadata.bracketSize).toBe(32);
+    const rounds = snapshot.rounds.filter((round) => round.side === "WINNERS");
+    expect(rounds).toHaveLength(6);
+    expect(rounds[0]?.matchIds).toHaveLength(1);
+    expect(rounds[1]?.matchIds).toHaveLength(16);
+
+    const playInMatch = snapshot.matches[rounds[0]!.matchIds[0]!]!;
+    expect(playInMatch.slots.map((slot) => slot.entrantId)).toEqual(["p32", "p33"]);
+    expect(playInMatch.nextMatchId).toBeTruthy();
+  });
+
+  it("creates four play-in matches for 36 entrants and leaves 28 direct entries in the main 32 bracket", () => {
+    const engine = BracketEngineFactory.create("SINGLE_ELIMINATION");
+    const snapshot = engine.generate({
+      entrants: entrants(36),
+      bestOf: 3
+    });
+
+    expect(snapshot.metadata.bracketSize).toBe(32);
+    const rounds = snapshot.rounds.filter((round) => round.side === "WINNERS");
+    expect(rounds[0]?.matchIds).toHaveLength(4);
+    expect(rounds[1]?.matchIds).toHaveLength(16);
+
+    const playInMatches = rounds[0]!.matchIds.map((matchId) => snapshot.matches[matchId]!);
+    expect(playInMatches.map((match) => match.slots.map((slot) => slot.entrantId))).toEqual([
+      ["p32", "p33"],
+      ["p29", "p36"],
+      ["p31", "p34"],
+      ["p30", "p35"]
+    ]);
+  });
+
+  it("creates twelve play-in matches for 44 entrants and twenty direct entries into the main 32 bracket", () => {
+    const engine = BracketEngineFactory.create("SINGLE_ELIMINATION");
+    const snapshot = engine.generate({
+      entrants: entrants(44),
+      bestOf: 3
+    });
+
+    expect(snapshot.metadata.bracketSize).toBe(32);
+    const rounds = snapshot.rounds.filter((round) => round.side === "WINNERS");
+    expect(rounds[0]?.matchIds).toHaveLength(12);
+    expect(rounds[1]?.matchIds).toHaveLength(16);
+
+    const playInMatches = rounds[0]!.matchIds.map((matchId) => snapshot.matches[matchId]!);
+    expect(playInMatches[0]?.slots.map((slot) => slot.entrantId)).toEqual(["p32", "p33"]);
+    expect(playInMatches[1]?.slots.map((slot) => slot.entrantId)).toEqual(["p25", "p40"]);
+    expect(playInMatches.at(-1)?.slots.map((slot) => slot.entrantId)).toEqual(["p22", "p43"]);
+
+    const directEntrantsInMainRound = rounds[1]!.matchIds
+      .map((matchId) => snapshot.matches[matchId]!)
+      .flatMap((match) =>
+        match.slots
+          .filter((slot) => slot.sourceMatchId == null)
+          .map((slot) => slot.entrantId)
+      )
+      .filter((entrantId): entrantId is string => entrantId != null);
+
+    expect(new Set(directEntrantsInMainRound).size).toBe(20);
+  });
+
+  it("creates sixteen play-in matches for 48 entrants and maps them into the main 32 bracket", () => {
+    const engine = BracketEngineFactory.create("SINGLE_ELIMINATION");
+    const snapshot = engine.generate({
+      entrants: entrants(48),
+      bestOf: 3
+    });
+
+    expect(snapshot.metadata.bracketSize).toBe(32);
+    const rounds = snapshot.rounds.filter((round) => round.side === "WINNERS");
+    expect(rounds[0]?.matchIds).toHaveLength(16);
+    expect(rounds[1]?.matchIds).toHaveLength(16);
+
+    const firstMainRound = rounds[1]!.matchIds.map((matchId) => snapshot.matches[matchId]!);
+    expect(firstMainRound.every((match) => match.slots.some((slot) => slot.sourceMatchId != null))).toBe(true);
   });
 
   it("advances a 4-player single elimination bracket to a champion", () => {

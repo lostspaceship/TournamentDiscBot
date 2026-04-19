@@ -5,7 +5,12 @@ import {
   type BracketTabKey,
   MAX_PARTICIPANTS_PER_PAGE
 } from "./bracket-paging.js";
-import type { BracketRenderModel, BracketRenderRound, BracketRenderTabModel, PlacementEntry } from "./types.js";
+import type {
+  BracketRenderModel,
+  BracketRenderRound,
+  BracketRenderTabModel,
+  PlacementEntry
+} from "./types.js";
 import { resolveTournamentBracketSnapshot } from "../services/support/bracket-snapshot.js";
 
 type TournamentWithBracketData = NonNullable<Awaited<ReturnType<TournamentRepository["getTournament"]>>>;
@@ -56,7 +61,7 @@ export const buildLiveBracketRenderModel = (
               side: match.side,
               roundNumber: match.roundNumber,
               sequence: match.sequence,
-              status: mode === "PREVIEW" ? previewStatusForMatch(match) : match.status,
+              status: match.status,
               scoreLabel:
                 latestReport?.player1Score != null && latestReport?.player2Score != null
                   ? `${latestReport.player1Score}-${latestReport.player2Score}`
@@ -65,7 +70,7 @@ export const buildLiveBracketRenderModel = (
                 resolveRenderedSlotName(tournament, snapshot, match, 0, namesByRegistrationId, mode) ?? "",
               player2Name:
                 resolveRenderedSlotName(tournament, snapshot, match, 1, namesByRegistrationId, mode) ?? "",
-              winnerName: mode === "PREVIEW" ? null : namesByRegistrationId.get(match.winnerId ?? "") ?? null,
+              winnerName: namesByRegistrationId.get(match.winnerId ?? "") ?? null,
               nextMatchId: match.nextMatchId,
               originEntrantIds: collectOriginEntrantIds(snapshot, match),
               displayEntrantIds: match.slots
@@ -80,8 +85,7 @@ export const buildLiveBracketRenderModel = (
         (left, right) =>
           sideOrder(left.side) - sideOrder(right.side) || left.roundNumber - right.roundNumber
       ) ?? [];
-  const visibleRounds =
-    mode === "PREVIEW" ? buildPreviewRounds(allRounds) : allRounds;
+  const visibleRounds = allRounds;
 
   const placementEntries: PlacementEntry[] = tournament.registrations
     .filter((entry) =>
@@ -138,10 +142,10 @@ export const buildLiveBracketRenderModel = (
       : [
           {
             key: "WINNERS" as const,
-            label: "Winners",
+            label: "Brackets",
             pages: [
               {
-                title: "Winners",
+                title: "Brackets",
                 subtitle: activeRegistrations.length > 0 ? "Live bracket preview" : "Waiting for players",
                 rounds: [],
                 entrantIds: entrantOrder
@@ -279,7 +283,7 @@ const resolveRenderedSlotName = (
   }
 
   if (mode === "PREVIEW") {
-    return match.roundNumber === 1 ? namesByRegistrationId.get(slot.entrantId) ?? null : null;
+    return slot.sourceMatchId == null ? namesByRegistrationId.get(slot.entrantId) ?? null : null;
   }
 
   if (!slot.sourceMatchId) {
@@ -297,7 +301,6 @@ const resolveRenderedSlotName = (
   }
 
   const hasRealAdvance =
-    persistedSourceMatch.reports.length > 0 &&
     sourceMatch.status === "COMPLETED" &&
     sourceMatch.winnerId === slot.entrantId;
 
@@ -322,7 +325,7 @@ const shouldHideMatchFromRender = (
     (persistedMatch == null || persistedMatch.reports.length === 0);
 
   if (isImplicitBye) {
-    return mode !== "PREVIEW" || entrantCount === 0;
+    return entrantCount === 0;
   }
 
   if (mode === "PREVIEW") {
@@ -344,5 +347,3 @@ const prettyPlacementStatus = (status: string): string => {
       return status.charAt(0) + status.slice(1).toLowerCase();
   }
 };
-
-const buildPreviewRounds = (rounds: BracketRenderRound[]): BracketRenderRound[] => rounds;

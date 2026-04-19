@@ -52,7 +52,7 @@ export const tournamentBracketHandler: InteractionHandlerModule = {
       const message =
         error instanceof AppError
           ? error.safeMessage
-          : "An unexpected error occurred while updating this bracket view.";
+          : "Couldn't update the bracket view.";
 
       if (interaction.deferred || interaction.replied) {
         await interaction.followUp({ content: message, ephemeral: true });

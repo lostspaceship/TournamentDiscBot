@@ -57,6 +57,47 @@ describe("buildBracketLayout", () => {
     expect(layout.rounds[1]!.matches[0]!.centerY).toBeLessThan(layout.rounds[0]!.matches[1]!.centerY);
   });
 
+  it("keeps sparse later rounds on the same structured grid", () => {
+    const rounds = [
+      makeRound(
+        1,
+        9,
+        ["m2-1", "m2-1", "m2-2", "m2-2", "m2-3", "m2-3", "m2-4", "m2-4", "m2-5"]
+      ),
+      makeRound(2, 5, ["m3-1", "m3-1", "m3-2", "m3-2", "m3-3"]),
+      makeRound(3, 3, ["m4-1", "m4-1", "m4-2"]),
+      makeRound(4, 2, ["m5-1", "m5-1"]),
+      makeRound(5, 1)
+    ];
+
+    const layout = buildBracketLayout(rounds, constants, { useStructuredGrid: true });
+
+    expect(layout.rounds[1]!.matches[4]!.centerY).toBeGreaterThan(layout.rounds[1]!.matches[3]!.centerY);
+    expect(layout.rounds[2]!.matches[2]!.centerY).toBeGreaterThan(layout.rounds[2]!.matches[1]!.centerY);
+    expect(layout.rounds[3]!.matches[1]!.centerY).toBeGreaterThan(layout.rounds[3]!.matches[0]!.centerY);
+    expect(layout.rounds[4]!.matches[0]!.centerY).toBeGreaterThan(layout.rounds[3]!.matches[0]!.centerY);
+  });
+
+  it("anchors play-ins against the widest main bracket round instead of cascading downward", () => {
+    const rounds = [
+      makeRound(1, 3, ["m2-1", "m2-2", "m2-2"]),
+      makeRound(
+        2,
+        4,
+        ["m3-1", "m3-1", "m3-2", "m3-2"]
+      ),
+      makeRound(3, 2, ["m4-1", "m4-1"]),
+      makeRound(4, 1)
+    ];
+
+    const layout = buildBracketLayout(rounds, constants, { useStructuredGrid: true });
+
+    expect(layout.rounds[1]!.matches).toHaveLength(4);
+    expect(layout.rounds[0]!.matches[0]!.centerY).toBe(layout.rounds[1]!.matches[0]!.centerY);
+    expect(layout.rounds[0]!.matches[1]!.centerY).toBeLessThan(layout.rounds[1]!.matches[1]!.centerY);
+    expect(layout.rounds[0]!.matches[2]!.centerY).toBeGreaterThan(layout.rounds[1]!.matches[1]!.centerY);
+  });
+
   it("keeps same input deterministic", () => {
     const rounds = [
       makeRound(1, 4, ["m2-1", "m2-1", "m2-2", "m2-2"]),

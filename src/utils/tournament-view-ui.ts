@@ -87,13 +87,13 @@ export const buildOverviewEmbed = (view: OverviewView): EmbedBuilder =>
         inline: true
       },
       {
-        name: "Format",
-        value: `${prettyStatus(view.format)}\nBest of ${view.bestOf}`,
+        name: "Registration",
+        value: `${view.activeCount} registered`,
         inline: true
       },
       {
-        name: "Registration",
-        value: `${view.activeCount} registered`,
+        name: "Match Format",
+        value: `Best of ${view.bestOf}`,
         inline: true
       }
     );
@@ -245,16 +245,16 @@ export const buildOverviewInfoComponents = (
     new ActionRowBuilder<ButtonBuilder>().addComponents(
       new ButtonBuilder()
         .setCustomId(
-          buildSignedCustomId("view", "ovp", `${tournamentId}|1`, "ovp001")
-        )
-        .setLabel("Players")
-        .setStyle(tab === "players" ? ButtonStyle.Primary : ButtonStyle.Secondary),
-      new ButtonBuilder()
-        .setCustomId(
           buildSignedCustomId("view", "ovr", `${tournamentId}|1`, "ovr001")
         )
         .setLabel("Rules")
-        .setStyle(tab === "rules" ? ButtonStyle.Primary : ButtonStyle.Secondary)
+        .setStyle(tab === "rules" ? ButtonStyle.Primary : ButtonStyle.Secondary),
+      new ButtonBuilder()
+        .setCustomId(
+          buildSignedCustomId("view", "ovp", `${tournamentId}|1`, "ovp001")
+        )
+        .setLabel("Players")
+        .setStyle(tab === "players" ? ButtonStyle.Primary : ButtonStyle.Secondary)
     )
   ];
 

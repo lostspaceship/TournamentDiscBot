@@ -12,5 +12,5 @@ export const runStartupChecks = async (): Promise<void> => {
   assertNotPlaceholder(env.DISCORD_TOKEN, "DISCORD_TOKEN");
   assertNotPlaceholder(env.DISCORD_CLIENT_ID, "DISCORD_CLIENT_ID");
 
-  await prisma.$queryRaw`SELECT 1`;
+  await prisma.$connect();
 };

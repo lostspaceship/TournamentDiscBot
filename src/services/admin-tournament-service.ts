@@ -50,7 +50,7 @@ interface ConfigTournamentInput {
 }
 
 interface UpdateTournamentRulesInput extends SimpleTournamentActionInput {
-  section: "MODE" | "WIN_CONDITIONS" | "SUMMONERS" | "EXTRA_INFO";
+  section: "MODE" | "WIN_CONDITIONS" | "BANS" | "SUMMONERS" | "EXTRA_INFO";
   mode: "ADD" | "REPLACE" | "CLEAR";
   value?: string;
 }
@@ -69,6 +69,11 @@ interface ModerationInput extends SimpleTournamentActionInput {
 interface ReseedTournamentInput extends SimpleTournamentActionInput {
   method?: SeedingMethod;
   reason: string;
+}
+
+interface SwitchBracketNamesInput extends SimpleTournamentActionInput {
+  firstPlayerName: string;
+  secondPlayerName: string;
 }
 
 type TournamentWithRelations = NonNullable<
@@ -153,8 +158,15 @@ export class AdminTournamentService {
               rulesWinConditions: [
                 "First Kill",
                 "First Tower",
-                "100 CS",
-                "Bans: Tryndamere, Lee Sin, Renekton, Qiyana, Demolish, Guardian Horn"
+                "100 CS"
+              ],
+              rulesBans: [
+                "Tryndamere",
+                "Lee Sin",
+                "Renekton",
+                "Qiyana",
+                "Demolish",
+                "Guardian Horn"
               ],
               rulesSummoners: ["All Summoners Allowed"],
               rulesExtraInfo: [
@@ -440,6 +452,78 @@ export class AdminTournamentService {
     await this.bracketSyncTarget?.syncTournamentBracket(input.tournamentId);
   }
 
+  public async switchBracketNames(input: SwitchBracketNamesInput) {
+    await prisma.$transaction(async (tx) => {
+      await lockTournamentTx(tx, input.tournamentId);
+      const tournament = await this.loadTournamentWithRelationsTx(tx, input.tournamentId, input.guildId);
+
+      if (
+        tournament.status !== TournamentStatus.REGISTRATION_OPEN &&
+        tournament.status !== TournamentStatus.REGISTRATION_CLOSED &&
+        tournament.status !== TournamentStatus.CHECK_IN
+      ) {
+        throw new ConflictError("Bracket names can only be switched before the tournament starts.");
+      }
+
+      if (tournament.brackets.length > 0) {
+        throw new ConflictError("Bracket names can only be switched before the bracket is locked.");
+      }
+
+      const activeRegistrations = tournament.registrations.filter(
+        (entry) => entry.status === RegistrationStatus.ACTIVE
+      );
+
+      const firstRegistration = this.findRegistrationByDisplayName(activeRegistrations, input.firstPlayerName);
+      const secondRegistration = this.findRegistrationByDisplayName(activeRegistrations, input.secondPlayerName);
+
+      if (firstRegistration.id === secondRegistration.id) {
+        throw new ConflictError("Choose two different players.");
+      }
+
+      const firstName = firstRegistration.participant.displayName;
+      const secondName = secondRegistration.participant.displayName;
+
+      await tx.participant.update({
+        where: { id: firstRegistration.participantId },
+        data: {
+          displayName: secondName
+        }
+      });
+
+      await tx.participant.update({
+        where: { id: secondRegistration.participantId },
+        data: {
+          displayName: firstName
+        }
+      });
+
+      await tx.tournament.update({
+        where: { id: tournament.id },
+        data: {
+          version: {
+            increment: 1
+          }
+        }
+      });
+
+      await writeAuditLogTx(tx, {
+        tournamentId: tournament.id,
+        guildId: input.guildId,
+        actorUserId: input.actorUserId,
+        action: AuditAction.TOURNAMENT_UPDATED,
+        targetType: "Tournament",
+        targetId: tournament.id,
+        metadataJson: {
+          action: "SWITCH_BRACKET_NAMES",
+          firstPlayerName: firstName,
+          secondPlayerName: secondName
+        }
+      });
+    });
+
+    await this.bracketSyncTarget?.syncTournamentBracket(input.tournamentId);
+  }
+
   public async disqualifyParticipant(input: ModerationInput) {
     return this.updateParticipantModeration(input, RegistrationStatus.DISQUALIFIED, AuditAction.PARTICIPANT_DISQUALIFIED);
   }
@@ -476,18 +560,11 @@ export class AdminTournamentService {
     return result;
   }
 
-  public async getTournamentSettings(input: SimpleTournamentActionInput) {
-    const tournament = await this.tournamentRepository.getTournament(input.tournamentId);
-    if (!tournament || tournament.guildId !== input.guildId) {
-      throw new NotFoundError("Tournament not found.");
-    }
-    return tournament;
-  }
-
   public async updateTournamentRules(input: UpdateTournamentRulesInput) {
     const fieldMap = {
       MODE: "rulesMode",
       WIN_CONDITIONS: "rulesWinConditions",
+      BANS: "rulesBans",
       SUMMONERS: "rulesSummoners",
       EXTRA_INFO: "rulesExtraInfo"
     } as const;
@@ -669,6 +746,38 @@ export class AdminTournamentService {
       ...entry,
       id: entry.id
     }));
+  }
+
+  private findRegistrationByDisplayName(
+    registrations: TournamentWithRelations["registrations"],
+    inputName: string
+  ) {
+    const normalized = inputName.trim().toLowerCase();
+    const exact = registrations.filter(
+      (entry) => entry.participant.displayName.trim().toLowerCase() === normalized
+    );
+
+    if (exact.length === 1) {
+      return exact[0]!;
+    }
+
+    if (exact.length > 1) {
+      throw new ConflictError(`Multiple players match "${inputName}". Be more specific.`);
+    }
+
+    const partial = registrations.filter((entry) =>
+      entry.participant.displayName.trim().toLowerCase().includes(normalized)
+    );
+
+    if (partial.length === 1) {
+      return partial[0]!;
+    }
+
+    if (partial.length > 1) {
+      throw new ConflictError(`Multiple players match "${inputName}". Be more specific.`);
+    }
+
+    throw new NotFoundError(`Player "${inputName}" was not found.`);
   }
 
   private async transitionTournamentStatus(args: {

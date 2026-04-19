@@ -39,9 +39,13 @@ const createContext = () =>
     adminTournamentService: {
       resolveDefaultTournament: vi.fn().mockResolvedValue("tour-1"),
       resolveTournamentReference: vi.fn().mockResolvedValue("tour-1"),
-      startTournament: vi.fn().mockResolvedValue(undefined)
+      startTournament: vi.fn().mockResolvedValue(undefined),
+      switchBracketNames: vi.fn().mockResolvedValue(undefined)
     },
     matchReportingService: {
+      undoLatestManualAdvance: vi.fn().mockResolvedValue({
+        reportId: "report-1"
+      }),
       manualAdvanceBySelection: vi.fn().mockResolvedValue({
         finalized: false,
         reportId: "report-1"
@@ -53,8 +57,8 @@ const createContext = () =>
   >;
 
 describe("executeTourCommand", () => {
-  it("defers and edits the reply for close", async () => {
-    const interaction = createBaseInteraction("close");
+  it("defers and edits the reply for start", async () => {
+    const interaction = createBaseInteraction("start");
     const context = createContext();
 
     await executeTourCommand(interaction as never, context as BootstrapContext);
@@ -66,7 +70,7 @@ describe("executeTourCommand", () => {
       actorUserId: "user-1"
     });
     expect(interaction.editReply).toHaveBeenCalledWith({
-      content: "Registration closed, the bracket is locked, and the tournament is ready for advances."
+      content: "Tournament started."
     });
     expect(interaction.reply).not.toHaveBeenCalled();
   });
@@ -74,7 +78,6 @@ describe("executeTourCommand", () => {
   it("defers and edits the reply for manual advance", async () => {
     const interaction = createBaseInteraction("advance");
     interaction.options.getString = vi.fn((name: string) => {
-      if (name === "tournament_id") return null;
       if (name === "name") return "Test Player 12";
       return null;
     });
@@ -88,11 +91,52 @@ describe("executeTourCommand", () => {
       guildId: "guild-1",
       tournamentId: "tour-1",
       actorUserId: "user-1",
-      targetUserId: undefined,
       targetPlayerName: "Test Player 12",
       idempotencyKey: "interaction-1"
     });
     expect(interaction.editReply).toHaveBeenCalled();
     expect(interaction.reply).not.toHaveBeenCalled();
+  });
+
+  it("swaps two bracket names before start", async () => {
+    const interaction = createBaseInteraction("switch");
+    interaction.options.getString = vi.fn((name: string) => {
+      if (name === "name_one") return "Test Player 12";
+      if (name === "name_two") return "Test Player 18";
+      return null;
+    });
+
+    const context = createContext();
+
+    await executeTourCommand(interaction as never, context as BootstrapContext);
+
+    expect(context.adminTournamentService.switchBracketNames).toHaveBeenCalledWith({
+      guildId: "guild-1",
+      tournamentId: "tour-1",
+      actorUserId: "user-1",
+      firstPlayerName: "Test Player 12",
+      secondPlayerName: "Test Player 18"
+    });
+    expect(interaction.reply).toHaveBeenCalledWith({
+      content: "Switched Test Player 12 and Test Player 18.",
+      ephemeral: true
+    });
+  });
+
+  it("defers and edits the reply for undo", async () => {
+    const interaction = createBaseInteraction("undo");
+    const context = createContext();
+
+    await executeTourCommand(interaction as never, context as BootstrapContext);
+
+    expect(interaction.deferReply).toHaveBeenCalledWith({ ephemeral: true });
+    expect(context.matchReportingService.undoLatestManualAdvance).toHaveBeenCalledWith({
+      guildId: "guild-1",
+      tournamentId: "tour-1",
+      actorUserId: "user-1"
+    });
+    expect(interaction.editReply).toHaveBeenCalledWith({
+      content: "Undid advance report-1."
+    });
   });
 });

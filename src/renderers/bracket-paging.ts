@@ -64,12 +64,12 @@ export const buildBracketTabs = (input: {
   const losersRounds = input.rounds.filter((round) => round.side === "LOSERS");
   const grandFinalRounds = input.rounds.filter((round) => round.side === "GRAND_FINALS");
 
-  const winnersPages = buildSidePages("WINNERS", "Winners", winnersRounds, input.entrantOrder);
+  const winnersPages = buildSidePages("WINNERS", "Winners", winnersRounds, input.entrantOrder, input.mode);
   if (winnersPages.length > 0) {
-    tabs.push({ key: "WINNERS", label: "Winners", pages: relabelPages("Winners", winnersPages) });
+    tabs.push({ key: "WINNERS", label: "Brackets", pages: relabelPages("Brackets", winnersPages) });
   }
 
-  const losersPages = buildSidePages("LOSERS", "Losers", losersRounds, input.entrantOrder);
+  const losersPages = buildSidePages("LOSERS", "Losers", losersRounds, input.entrantOrder, input.mode);
   if (losersPages.length > 0) {
     tabs.push({ key: "LOSERS", label: "Losers", pages: relabelPages("Losers", losersPages) });
   }
@@ -105,10 +105,22 @@ const buildSidePages = (
   side: "WINNERS" | "LOSERS",
   label: string,
   rounds: BracketPagingRound[],
-  entrantOrder: string[]
+  entrantOrder: string[],
+  mode: "OFFICIAL" | "PREVIEW" | "NONE"
 ): BracketRenderPageModel[] => {
   if (rounds.length === 0) {
     return [];
+  }
+
+  if (side === "WINNERS" || mode === "PREVIEW") {
+    return [
+      {
+        title: label,
+        subtitle: mode === "PREVIEW" ? "Live bracket preview" : "Full bracket",
+        rounds: normalizeRounds(rounds),
+        entrantIds: uniqueEntrants(rounds)
+      }
+    ];
   }
 
   const anchorRound = rounds[0];
@@ -329,6 +341,7 @@ const chunkAnchorRound = (matches: BracketPagingMatch[]): BracketPagingMatch[][]
   }
   return chunks;
 };
+
 
 const relabelPages = (label: string, pages: BracketRenderPageModel[]): BracketRenderPageModel[] =>
   pages.map((page, index) => ({

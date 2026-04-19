@@ -75,8 +75,18 @@ export class BracketSyncService implements BracketSyncTarget {
         seedingMethod: tournament.settings?.seedingMethod ?? "RANDOM"
       });
       const infoPayload: MessageCreateOptions & MessageEditOptions =
-        infoTab === "RULES"
+        infoTab === "PLAYERS"
           ? {
+              embeds: [overviewEmbed, buildParticipantsEmbed(participantsPage, "Registered Players", false)],
+              components: buildOverviewInfoComponents(
+                participantsPage.tournamentId,
+                "players",
+                participantsPage.page,
+                participantsPage.totalPages
+              ),
+              allowedMentions: { parse: [] }
+            }
+          : {
               embeds: [
                 overviewEmbed,
                 buildRulesEmbed({
@@ -89,6 +99,7 @@ export class BracketSyncService implements BracketSyncTarget {
                       title: "Win Conditions",
                       items: tournament.settings?.rulesWinConditions ?? []
                     },
+                    { key: "bans", title: "Bans", items: tournament.settings?.rulesBans ?? [] },
                     {
                       key: "summoners",
                       title: "Summoners",
@@ -103,16 +114,6 @@ export class BracketSyncService implements BracketSyncTarget {
                 })
               ],
               components: buildOverviewInfoComponents(tournament.id, "rules", 1, 1),
-              allowedMentions: { parse: [] }
-            }
-          : {
-              embeds: [overviewEmbed, buildParticipantsEmbed(participantsPage, "Registered Players", false)],
-              components: buildOverviewInfoComponents(
-                participantsPage.tournamentId,
-                "players",
-                participantsPage.page,
-                participantsPage.totalPages
-              ),
               allowedMentions: { parse: [] }
             };
 
@@ -277,7 +278,7 @@ export class BracketSyncService implements BracketSyncTarget {
   }
 
   private resolveInfoTab(value: string): "PLAYERS" | "RULES" {
-    return value === "RULES" ? "RULES" : "PLAYERS";
+    return value === "PLAYERS" ? "PLAYERS" : "RULES";
   }
 
   private resolveInfoPage(value: number): number {

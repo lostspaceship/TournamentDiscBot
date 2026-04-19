@@ -74,7 +74,7 @@ export const tournamentStaffHandler: InteractionHandlerModule = {
       const message =
         error instanceof AppError
           ? error.safeMessage
-          : "An unexpected error occurred while undoing this manual advance.";
+          : "Couldn't undo that advance.";
 
       if (interaction.deferred || interaction.replied) {
         await interaction.followUp({ content: message, ephemeral: true });

@@ -1,27 +1,12 @@
-import { BracketType, MatchOutcomeType, SeedingMethod, TournamentFormat } from "@prisma/client";
+import pkg from "@prisma/client";
 import { z } from "zod";
 
+const { SeedingMethod, TournamentFormat } = pkg;
+
 const idSchema = z.string().trim().min(1).max(64);
-const optionalReasonSchema = z.string().trim().max(250).optional().nullable();
-const requiredReasonSchema = z.string().trim().min(1).max(250);
-const matchReportBaseSchema = z.object({
-  tournamentId: idSchema,
-  matchId: idSchema,
-  winnerRegistrationId: idSchema,
-  loserRegistrationId: idSchema,
-  outcomeType: z.nativeEnum(MatchOutcomeType),
-  winnerScore: z.number().int().min(0).max(99).optional().nullable(),
-  loserScore: z.number().int().min(0).max(99).optional().nullable(),
-  reason: optionalReasonSchema
-});
 
 export const tournamentIdSchema = z.object({
   tournamentId: idSchema
-});
-
-export const reasonedTournamentActionSchema = z.object({
-  tournamentId: idSchema,
-  reason: requiredReasonSchema
 });
 
 export const createTournamentCommandSchema = z.object({
@@ -29,9 +14,14 @@ export const createTournamentCommandSchema = z.object({
   announcementChannelId: z.string().trim().min(1).max(32),
   format: z.nativeEnum(TournamentFormat).default(TournamentFormat.SINGLE_ELIMINATION),
   maxParticipants: z.number().int().min(2).max(4096).default(256),
-  bestOfDefault: z.number().int().min(1).max(11).refine((value) => value % 2 === 1, {
-    message: "Best-of value must be odd."
-  }).default(3)
+  bestOfDefault: z.number()
+    .int()
+    .min(1)
+    .max(11)
+    .refine((value) => value % 2 === 1, {
+      message: "Best-of value must be odd."
+    })
+    .default(3)
 });
 
 export const joinTournamentCommandSchema = z.object({
@@ -54,107 +44,35 @@ export const configTournamentCommandSchema = z.object({
   allowWithdrawals: z.boolean().optional()
 });
 
-export const matchReportCommandSchema = matchReportBaseSchema.superRefine((value, ctx) => {
-    if (value.outcomeType === MatchOutcomeType.SCORE) {
-      if (value.winnerScore == null || value.loserScore == null) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: "Score-based reports require both scores.",
-          path: ["winnerScore"]
-        });
-      }
-      return;
-    }
-
-    if (value.winnerScore != null || value.loserScore != null) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: "Scores are only valid for score-based outcomes.",
-        path: ["winnerScore"]
-      });
-    }
-});
-
-export const confirmResultCommandSchema = z.object({
-  tournamentId: idSchema,
-  reportId: idSchema
-});
-
-export const disputeResultCommandSchema = z.object({
-  tournamentId: idSchema,
-  reportId: idSchema,
-  reason: requiredReasonSchema
-});
-
-export const bracketRoundCommandSchema = z.object({
-  tournamentId: idSchema,
-  side: z.nativeEnum(BracketType),
-  roundNumber: z.number().int().min(1).max(64)
-});
-
-export const matchViewCommandSchema = z.object({
-  tournamentId: idSchema,
-  matchId: idSchema.optional()
-});
-
-export const staffOverrideCommandSchema = matchReportBaseSchema.extend({
-  reason: requiredReasonSchema
-}).superRefine((value, ctx) => {
-  if (value.outcomeType === MatchOutcomeType.SCORE) {
-    if (value.winnerScore == null || value.loserScore == null) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: "Score-based reports require both scores.",
-        path: ["winnerScore"]
-      });
-    }
-    return;
-  }
-
-  if (value.winnerScore != null || value.loserScore != null) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: "Scores are only valid for score-based outcomes.",
-      path: ["winnerScore"]
-    });
-  }
-});
-
-export const moderationCommandSchema = z.object({
-  tournamentId: idSchema,
-  targetUserId: z.string().trim().min(1).max(64),
-  reason: requiredReasonSchema
-});
-
 export const reseedCommandSchema = z.object({
   tournamentId: idSchema,
-  method: z.nativeEnum(SeedingMethod),
-  reason: requiredReasonSchema
+  method: z.nativeEnum(SeedingMethod)
 });
 
-export const manualAdvanceCommandSchema = z
-  .object({
-    tournamentId: idSchema,
-    targetUserId: z.string().trim().min(1).max(64).optional(),
-    targetPlayerName: z.string().trim().min(2).max(80).optional()
-  })
-  .refine((value) => Boolean(value.targetUserId) !== Boolean(value.targetPlayerName), {
-    message: "Provide either a Discord user or a player name.",
-    path: ["targetUserId"]
-  });
-
-export const fakePlayersCommandSchema = z.object({
+export const manualAdvanceCommandSchema = z.object({
   tournamentId: idSchema,
-  count: z.number().int().min(1).max(64),
-  prefix: z.string().trim().min(1).max(40).optional()
+  targetPlayerName: z.string().trim().min(2).max(80)
 });
 
-export const tournamentRulesCommandSchema = z.object({
+export const switchBracketNamesCommandSchema = z.object({
   tournamentId: idSchema,
-  section: z.enum(["MODE", "WIN_CONDITIONS", "SUMMONERS", "EXTRA_INFO"]),
+  firstPlayerName: z.string().trim().min(2).max(80),
+  secondPlayerName: z.string().trim().min(2).max(80)
+});
+
+export const tournamentIgnLookupCommandSchema = z.object({
+  tournamentId: idSchema,
+  name: z.string().trim().min(2).max(80)
+});
+
+const tournamentRulesCommandBaseSchema = z.object({
+  tournamentId: idSchema,
+  section: z.enum(["MODE", "WIN_CONDITIONS", "BANS", "SUMMONERS", "EXTRA_INFO"]),
   mode: z.enum(["ADD", "REPLACE", "CLEAR"]),
   value: z.string().trim().min(1).max(180).optional()
-}).superRefine((value, ctx) => {
+});
+
+export const tournamentRulesCommandSchema = tournamentRulesCommandBaseSchema.superRefine((value, ctx) => {
   if (value.mode !== "CLEAR" && !value.value) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,

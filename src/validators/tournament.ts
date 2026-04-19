@@ -1,5 +1,7 @@
-import { TournamentFormat } from "@prisma/client";
+import pkg from "@prisma/client";
 import { z } from "zod";
+
+const { TournamentFormat } = pkg;
 
 export const createTournamentSchema = z.object({
   name: z.string().trim().min(3).max(80),

@@ -36,7 +36,6 @@ export const staffActions = new Set([
 export const participantActions = new Set([
   "registration.join",
   "registration.leave",
-  "registration.checkin",
   "match.view",
   "match.report",
   "match.confirm",

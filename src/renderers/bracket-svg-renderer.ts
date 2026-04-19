@@ -15,6 +15,7 @@ const RIGHT_PAD = 48;
 const BOTTOM_PAD = 48;
 const SURFACE_RADIUS = 26;
 const MAX_IMAGE_WIDTH = 1800;
+const MIN_BRACKET_IMAGE_WIDTH = 1320;
 const PLACEMENT_CARD_HEIGHT = 58;
 const PLACEMENT_COLUMNS = 2;
 const PLACEMENT_COLUMN_GAP = 20;
@@ -68,8 +69,12 @@ const statusColor = (status: string): string => {
 };
 
 const connectorPath = (fromX: number, fromY: number, toX: number, toY: number): string => {
-  const midX = fromX + COLUMN_GAP / 2;
-  return `M ${fromX} ${fromY} C ${midX} ${fromY}, ${midX} ${toY}, ${toX} ${toY}`;
+  if (Math.abs(fromY - toY) < 0.5) {
+    return `M ${fromX} ${fromY} L ${toX} ${toY}`;
+  }
+
+  const targetElbowX = Math.max(fromX + 20, toX - 28);
+  return `M ${fromX} ${fromY} H ${targetElbowX} V ${toY} H ${toX}`;
 };
 
 export class BracketSvgRenderer {
@@ -97,6 +102,8 @@ export class BracketSvgRenderer {
       bottomPad: BOTTOM_PAD,
       headerHeight: HEADER_HEIGHT,
       pageInfoHeight: PAGE_INFO_HEIGHT
+    }, {
+      useStructuredGrid: true
     });
 
     const cards: string[] = [];
@@ -127,16 +134,18 @@ export class BracketSvgRenderer {
         }
 
         connectors.push(
-          `<path d="${connectorPath(from.right, from.centerY, to.left, to.centerY)}" fill="none" stroke="${COLORS.connector}" stroke-width="4" stroke-linecap="round" />`
+          `<path d="${connectorPath(from.right, from.centerY, to.left, to.centerY)}" fill="none" stroke="${COLORS.connector}" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" />`
         );
       });
     });
 
+    const renderWidth = Math.max(layout.width, MIN_BRACKET_IMAGE_WIDTH);
+
     return this.wrapSvg(
       model,
-      layout.width,
+      renderWidth,
       layout.height,
-      `${this.renderShell(model, layout.width, layout.height)}${connectors.join("")}${cards.join("")}`
+      `${this.renderShell(model, renderWidth, layout.height)}${connectors.join("")}${cards.join("")}`
     );
   }
 
@@ -147,11 +156,19 @@ export class BracketSvgRenderer {
     const placedColumns = this.resolvePlacementColumns(placedEntries.length);
     const sectionColumns = Math.max(activeColumns, placedColumns, 1);
     const placementCardWidth = this.resolvePlacementCardWidth(placements);
-    const width =
+    const contentWidth =
       LEFT_PAD +
       RIGHT_PAD +
       sectionColumns * placementCardWidth +
       Math.max(0, sectionColumns - 1) * PLACEMENT_COLUMN_GAP;
+    const footerTabWidths = model.tabs.map((tab) => Math.max(110, 42 + tab.label.length * 9));
+    const footerTabsWidth =
+      footerTabWidths.length > 0
+        ? footerTabWidths.reduce((sum, value) => sum + value, 0) +
+          (footerTabWidths.length - 1) * 14
+        : 0;
+    const shellMinWidth = 20 + RIGHT_PAD + footerTabsWidth + 48;
+    const width = Math.max(contentWidth, shellMinWidth);
     const rowGap = 16;
     const headingHeight = 26;
     const headerOffset = TOP_PAD;
@@ -195,45 +212,33 @@ export class BracketSvgRenderer {
 
   private renderPlaceholder(model: BracketRenderModel): string {
     const width = 1320;
-    const height = HEADER_HEIGHT + PAGE_INFO_HEIGHT + 220 + BOTTOM_PAD;
-    const panelX = LEFT_PAD;
-    const panelY = HEADER_HEIGHT + PAGE_INFO_HEIGHT + 24;
-    const panelWidth = width - LEFT_PAD - RIGHT_PAD;
+    const placeholderCount = 3;
+    const height =
+      TOP_PAD +
+      placeholderCount * CARD_HEIGHT +
+      (placeholderCount - 1) * ROW_GAP +
+      FOOTER_SAFE_SPACE +
+      BOTTOM_PAD;
+    const cardX = LEFT_PAD;
+    const cardY = TOP_PAD;
     const body = [
       this.renderShell(model, width, height),
-      `<rect x="${panelX}" y="${panelY}" width="${panelWidth}" height="180" rx="22" fill="${COLORS.card}" stroke="${COLORS.border}" stroke-width="2" />`,
-      `<text x="${panelX + 28}" y="${panelY + 60}" fill="${COLORS.text}" font-family="${FONT_STACK}" font-size="24" font-weight="700">Bracket pending</text>`,
-      `<text x="${panelX + 28}" y="${panelY + 96}" fill="${COLORS.muted}" font-family="${FONT_STACK}" font-size="15">Waiting for enough live matches to render the bracket path.</text>`
+      ...Array.from({ length: placeholderCount }, (_, index) =>
+        [
+          `<rect x="${cardX}" y="${cardY + index * (CARD_HEIGHT + ROW_GAP)}" width="${CARD_WIDTH}" height="${CARD_HEIGHT}" rx="18" fill="${COLORS.card}" stroke="${COLORS.border}" stroke-width="2" />`,
+          `<rect x="${cardX + CARD_INNER_PAD}" y="${cardY + index * (CARD_HEIGHT + ROW_GAP) + CARD_INNER_PAD}" width="${CARD_WIDTH - CARD_INNER_PAD * 2}" height="${CARD_HEADER_HEIGHT}" rx="14" fill="${COLORS.surfaceAlt}" />`
+        ].join("")
+      )
     ];
 
     return this.wrapSvg(model, width, height, body.join(""));
   }
 
   private renderShell(model: BracketRenderModel, width: number, height: number): string {
-    const tabSpacing = 14;
-    const tabWidth = 118;
-    const tabHeight = 34;
-    const totalTabsWidth =
-      model.tabs.length > 0 ? model.tabs.length * tabWidth + (model.tabs.length - 1) * tabSpacing : 0;
-    const tabsStartX = width - RIGHT_PAD - totalTabsWidth;
-    const tabsY = height - 72;
-
-    const tabPills = model.tabs
-      .map((tab, index) => {
-        const x = tabsStartX + index * (tabWidth + tabSpacing);
-        const active = tab.key === model.activeTab;
-        return [
-          `<rect x="${x}" y="${tabsY}" width="${tabWidth}" height="${tabHeight}" rx="17" fill="${active ? COLORS.accent : COLORS.pill}" stroke="${active ? COLORS.accent : COLORS.border}" stroke-width="1.5" />`,
-          `<text x="${x + tabWidth / 2}" y="${tabsY + 22}" text-anchor="middle" fill="${active ? "#11151f" : COLORS.text}" font-family="${FONT_STACK}" font-size="14" font-weight="700">${escapeXml(tab.label)}</text>`
-        ].join("");
-      })
-      .join("");
-
     return [
       `<rect x="0" y="0" width="${width}" height="${height}" fill="${COLORS.background}" />`,
       `<rect x="20" y="20" width="${width - 40}" height="${height - 40}" rx="${SURFACE_RADIUS}" fill="${COLORS.surface}" stroke="${COLORS.border}" stroke-width="2" />`,
-      `<text x="${width - RIGHT_PAD}" y="56" text-anchor="end" fill="${COLORS.muted}" font-family="${FONT_STACK}" font-size="12">${escapeXml(model.updatedLabel)}</text>`,
-      tabPills
+      `<text x="${width - RIGHT_PAD}" y="56" text-anchor="end" fill="${COLORS.muted}" font-family="${FONT_STACK}" font-size="12">${escapeXml(model.updatedLabel)}</text>`
     ].join("");
   }
 
@@ -270,10 +275,7 @@ export class BracketSvgRenderer {
       winner
         ? `<rect x="${x - 8}" y="${y - 15}" width="${CARD_WIDTH - 32}" height="22" rx="11" fill="rgba(74, 222, 128, 0.18)" />`
         : "",
-      winner
-        ? `<rect x="${x - 8}" y="${y - 15}" width="4" height="22" rx="2" fill="${COLORS.success}" />`
-        : "",
-      `<text x="${x}" y="${y}" fill="${winner ? COLORS.text : "#dce8ff"}" font-family="${FONT_STACK}" font-size="17" font-weight="${winner ? 700 : 600}">${escapeXml(truncate(name, 26))}</text>`
+      `<text x="${x}" y="${y + 2}" fill="${winner ? COLORS.text : "#dce8ff"}" font-family="${FONT_STACK}" font-size="17" font-weight="${winner ? 700 : 600}">${escapeXml(truncate(name, 26))}</text>`
     ].join("");
   }
 

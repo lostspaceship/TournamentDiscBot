@@ -44,7 +44,7 @@ export const routeInteraction = async (
     if (interaction.isChatInputCommand()) {
       const command = context.commands.get(interaction.commandName);
       if (!command) {
-        await replySafe(interaction, "This command is not registered.");
+        await replySafe(interaction, "That command isn't available.");
         return;
       }
 
@@ -64,7 +64,7 @@ export const routeInteraction = async (
       interaction.isStringSelectMenu() ||
       interaction.isModalSubmit()
     ) {
-      const message = "This control is no longer valid. Please refresh this message and try again.";
+      const message = "This control has expired. Refresh and try again.";
       if (interaction.replied || interaction.deferred) {
         await interaction.followUp({ content: message, ephemeral: true });
       } else {
@@ -75,7 +75,7 @@ export const routeInteraction = async (
     const message =
       error instanceof AppError
         ? error.safeMessage
-        : "An unexpected error occurred while handling this interaction.";
+        : "Couldn't complete that interaction.";
 
     context.logger.error(
       {

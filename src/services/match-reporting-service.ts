@@ -434,7 +434,7 @@ export class MatchReportingService {
       await this.bracketSyncTarget?.syncTournamentBracket(input.tournamentId);
       return result;
     } catch (error) {
-      throw mapUniqueConstraintError(error, "This manual advancement was already processed.");
+      throw mapUniqueConstraintError(error, "That advance was already processed.");
     }
   }
 
@@ -445,7 +445,7 @@ export class MatchReportingService {
         const tournament = await this.loadTournamentTx(tx, input.tournamentId, input.guildId);
 
         if (tournament.brackets.length === 0) {
-          throw new ConflictError("The bracket is not locked yet. Run /tour close first.");
+          throw new ConflictError("The bracket is not locked yet. Run /tour start first.");
         }
 
         this.validateTournamentIsActive(tournament);
@@ -483,7 +483,7 @@ export class MatchReportingService {
       await this.bracketSyncTarget?.syncTournamentBracket(input.tournamentId);
       return result;
     } catch (error) {
-      throw mapUniqueConstraintError(error, "This manual advancement was already processed.");
+      throw mapUniqueConstraintError(error, "That advance was already processed.");
     }
   }
 
@@ -512,7 +512,7 @@ export class MatchReportingService {
       });
 
       if (!auditLog) {
-        throw new ConflictError("This result report was not created by a manual advance.");
+        throw new ConflictError("That action was not created by a manual advance.");
       }
 
       const laterMutations = await tx.auditLog.findFirst({
@@ -527,7 +527,7 @@ export class MatchReportingService {
       });
 
       if (laterMutations) {
-        throw new ConflictError("This manual advance can no longer be undone because the bracket changed afterward.");
+        throw new ConflictError("That advance can no longer be undone because the bracket changed afterward.");
       }
 
       const snapshotBefore = this.extractSnapshotFromAuditLog(auditLog.metadataJson);
@@ -539,7 +539,7 @@ export class MatchReportingService {
         currentMatchIds.size !== snapshotMatchIds.size ||
         [...currentMatchIds].some((matchId) => !snapshotMatchIds.has(matchId))
       ) {
-        throw new ConflictError("This manual advance cannot be undone safely because the match structure changed.");
+        throw new ConflictError("That advance cannot be undone safely because the match structure changed.");
       }
 
       await this.applySnapshotToExistingMatchesTx(tx, tournament, snapshotBefore);
@@ -575,6 +575,49 @@ export class MatchReportingService {
     });
 
     await this.bracketSyncTarget?.syncTournamentBracket(input.tournamentId);
+  }
+
+  public async undoLatestManualAdvance(input: MatchActionInput) {
+    const reportId = await prisma.$transaction(async (tx) => {
+      await lockTournamentTx(tx, input.tournamentId);
+      const tournament = await this.loadTournamentTx(tx, input.tournamentId, input.guildId);
+
+      const latestUndoableAdvance = await tx.auditLog.findFirst({
+        where: {
+          tournamentId: tournament.id,
+          action: AuditAction.MANUAL_ADVANCE
+        },
+        orderBy: { createdAt: "desc" }
+      });
+
+      if (!latestUndoableAdvance) {
+        throw new NotFoundError("No manual advance is available to undo.");
+      }
+
+      const laterMutations = await tx.auditLog.findFirst({
+        where: {
+          tournamentId: tournament.id,
+          createdAt: { gt: latestUndoableAdvance.createdAt },
+          action: {
+            in: [...bracketMutationAuditActions]
+          }
+        },
+        orderBy: { createdAt: "asc" }
+      });
+
+      if (laterMutations) {
+        throw new ConflictError("The latest advance can no longer be undone because the bracket changed afterward.");
+      }
+
+      return latestUndoableAdvance.targetId;
+    });
+
+    await this.undoManualAdvance({
+      ...input,
+      reportId
+    });
+
+    return { reportId };
   }
 
   private async applyConfirmedOutcomeTx(
@@ -862,7 +905,7 @@ export class MatchReportingService {
       Array.isArray(metadataJson) ||
       !("snapshotBefore" in metadataJson)
     ) {
-      throw new ConflictError("Undo snapshot is unavailable for this manual advance.");
+      throw new ConflictError("Undo data is unavailable for that advance.");
     }
 
     const snapshot = (metadataJson as { snapshotBefore?: BracketSnapshot }).snapshotBefore;

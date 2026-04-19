@@ -33,9 +33,14 @@ export interface BracketLayoutModel {
   rounds: PositionedRound[];
 }
 
+export interface BracketLayoutOptions {
+  useStructuredGrid?: boolean;
+}
+
 export const buildBracketLayout = (
   rounds: BracketRenderRound[],
-  constants: LayoutConstants
+  constants: LayoutConstants,
+  options: BracketLayoutOptions = {}
 ): BracketLayoutModel => {
   const roundsWithMatches = rounds.filter((round) => round.matches.length > 0);
   if (roundsWithMatches.length === 0) {
@@ -49,20 +54,57 @@ export const buildBracketLayout = (
 
   const minimumCenterGap = constants.cardHeight + constants.rowGap;
   const topOrigin = constants.headerHeight + constants.pageInfoHeight + constants.topPad;
-  const positionedRounds: PositionedRound[] = [];
+  const positionedRounds: Array<PositionedRound | undefined> = new Array(roundsWithMatches.length);
   const positionsByMatchId = new Map<string, { centerY: number }>();
+  const anchorRoundIndex = options.useStructuredGrid
+    ? roundsWithMatches.reduce(
+        (bestIndex, round, index, source) =>
+          round.matches.length > source[bestIndex]!.matches.length ? index : bestIndex,
+        0
+      )
+    : 0;
+  const virtualAnchorSlots = options.useStructuredGrid
+    ? nextPowerOfTwo(roundsWithMatches[anchorRoundIndex]?.matches.length ?? 1)
+    : 0;
 
-  roundsWithMatches.forEach((round, roundIndex) => {
+  const positionRound = (roundIndex: number): void => {
+    const round = roundsWithMatches[roundIndex]!;
     const x = constants.leftPad + roundIndex * (constants.cardWidth + constants.columnGap);
-    const idealCenters =
-      roundIndex === 0
-        ? round.matches.map((_, matchIndex) => topOrigin + constants.cardHeight / 2 + matchIndex * minimumCenterGap)
-        : round.matches.map((match, matchIndex) =>
-            resolveIdealCenter(match, roundsWithMatches[roundIndex - 1]?.matches ?? [], positionsByMatchId) ??
-            topOrigin + constants.cardHeight / 2 + matchIndex * minimumCenterGap
-          );
+    let idealCenters: number[];
 
-    const compactCenters = compactCentersPreservingOrder(idealCenters, minimumCenterGap, topOrigin + constants.cardHeight / 2);
+    if (!options.useStructuredGrid) {
+      idealCenters =
+        roundIndex === 0
+          ? round.matches.map((_, matchIndex) => topOrigin + constants.cardHeight / 2 + matchIndex * minimumCenterGap)
+          : round.matches.map((match, matchIndex) =>
+              resolveIdealCenter(match, roundsWithMatches[roundIndex - 1]?.matches ?? [], positionsByMatchId) ??
+              topOrigin + constants.cardHeight / 2 + matchIndex * minimumCenterGap
+            );
+    } else if (roundIndex >= anchorRoundIndex) {
+      idealCenters = round.matches.map((_, matchIndex) =>
+        resolveStructuredGridCenter(
+          matchIndex + 1,
+          roundIndex - anchorRoundIndex,
+          virtualAnchorSlots,
+          topOrigin,
+          constants.cardHeight,
+          minimumCenterGap
+        )
+      );
+    } else {
+      idealCenters = resolvePreAnchorCenters(
+        round.matches,
+        roundsWithMatches[roundIndex + 1]?.matches ?? [],
+        positionsByMatchId,
+        minimumCenterGap,
+        topOrigin + constants.cardHeight / 2
+      );
+    }
+
+    const compactCenters =
+      options.useStructuredGrid && roundIndex < anchorRoundIndex
+        ? preserveExactAlignedCenters(idealCenters, topOrigin + constants.cardHeight / 2)
+        : compactCentersPreservingOrder(idealCenters, minimumCenterGap, topOrigin + constants.cardHeight / 2);
     const matches = round.matches.map((match, matchIndex) => {
       const centerY = compactCenters[matchIndex]!;
       positionsByMatchId.set(match.id, { centerY });
@@ -74,27 +116,77 @@ export const buildBracketLayout = (
       };
     });
 
-    positionedRounds.push({
+    positionedRounds[roundIndex] = {
       round,
       x,
       labelY: constants.headerHeight + constants.pageInfoHeight + 6,
       matches
-    });
-  });
+    };
+  };
+
+  if (!options.useStructuredGrid) {
+    roundsWithMatches.forEach((_, roundIndex) => positionRound(roundIndex));
+  } else {
+    for (let roundIndex = anchorRoundIndex; roundIndex < roundsWithMatches.length; roundIndex += 1) {
+      positionRound(roundIndex);
+    }
+
+    for (let roundIndex = anchorRoundIndex - 1; roundIndex >= 0; roundIndex -= 1) {
+      positionRound(roundIndex);
+    }
+  }
+
+  const finalizedRounds = positionedRounds.filter((round): round is PositionedRound => round != null);
 
   const maxBottom = Math.max(
-    ...positionedRounds.flatMap((round) => round.matches.map((match) => match.y + constants.cardHeight))
+    ...finalizedRounds.flatMap((round) => round.matches.map((match) => match.y + constants.cardHeight))
   );
 
   return {
     width:
       constants.leftPad +
-      positionedRounds.length * constants.cardWidth +
-      Math.max(0, positionedRounds.length - 1) * constants.columnGap +
+      finalizedRounds.length * constants.cardWidth +
+      Math.max(0, finalizedRounds.length - 1) * constants.columnGap +
       constants.rightPad,
     height: maxBottom + constants.bottomPad,
-    rounds: positionedRounds
+    rounds: finalizedRounds
   };
+};
+
+const resolvePreAnchorCenters = (
+  matches: BracketRenderMatch[],
+  nextRoundMatches: BracketRenderMatch[],
+  positionsByMatchId: Map<string, { centerY: number }>,
+  minimumCenterGap: number,
+  fallbackStartCenterY: number
+): number[] => {
+  const nextMatchCenterById = new Map(
+    nextRoundMatches.map((match) => [match.id, positionsByMatchId.get(match.id)?.centerY ?? fallbackStartCenterY] as const)
+  );
+  const groupedByNextMatch = new Map<string | null, BracketRenderMatch[]>();
+
+  for (const match of matches) {
+    const key = match.nextMatchId ?? null;
+    const group = groupedByNextMatch.get(key) ?? [];
+    group.push(match);
+    groupedByNextMatch.set(key, group);
+  }
+
+  const centerByMatchId = new Map<string, number>();
+  for (const [nextMatchId, group] of groupedByNextMatch.entries()) {
+    const targetCenter = nextMatchId != null
+      ? nextMatchCenterById.get(nextMatchId) ?? fallbackStartCenterY
+      : fallbackStartCenterY;
+    const offsetBase = (group.length - 1) / 2;
+    group
+      .slice()
+      .sort((left, right) => left.sequence - right.sequence)
+      .forEach((match, index) => {
+        centerByMatchId.set(match.id, targetCenter + (index - offsetBase) * minimumCenterGap);
+      });
+  }
+
+  return matches.map((match, index) => centerByMatchId.get(match.id) ?? fallbackStartCenterY + index * minimumCenterGap);
 };
 
 const resolveIdealCenter = (
@@ -147,4 +239,43 @@ const compactCentersPreservingOrder = (
   }
 
   return centers;
+};
+
+const preserveExactAlignedCenters = (
+  idealCenters: number[],
+  minimumCenterY: number
+): number[] => {
+  if (idealCenters.length === 0) {
+    return [];
+  }
+
+  const minimumIdeal = Math.min(...idealCenters);
+  const shift = Math.max(0, minimumCenterY - minimumIdeal);
+  return idealCenters.map((center) => center + shift);
+};
+
+const resolveStructuredGridCenter = (
+  sequence: number,
+  roundIndex: number,
+  virtualRoundOneSlots: number,
+  topOrigin: number,
+  cardHeight: number,
+  minimumCenterGap: number
+): number => {
+  const safeSequence = Math.max(1, sequence);
+  const roundBlockSize = 2 ** roundIndex;
+  const roundCapacity = Math.max(1, Math.ceil(virtualRoundOneSlots / roundBlockSize));
+  const clampedSequence = Math.min(safeSequence, roundCapacity);
+  const centerSlot = (clampedSequence - 1) * roundBlockSize + (roundBlockSize - 1) / 2;
+
+  return topOrigin + cardHeight / 2 + centerSlot * minimumCenterGap;
+};
+
+const nextPowerOfTwo = (value: number): number => {
+  let size = 1;
+  while (size < Math.max(1, value)) {
+    size *= 2;
+  }
+
+  return size;
 };

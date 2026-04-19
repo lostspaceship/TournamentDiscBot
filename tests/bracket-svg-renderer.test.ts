@@ -176,6 +176,5 @@ describe("BracketSvgRenderer", () => {
     expect(svg).toContain("MATCH 6");
     expect(svg).toContain("MATCH 3");
     expect(svg).toContain("MATCH 2");
-    expect(svg).toContain("Winners");
   });
 });

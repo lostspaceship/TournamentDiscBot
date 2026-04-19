@@ -55,7 +55,7 @@ describe("buildBracketTabs", () => {
     expect(winners?.pages[0]?.entrantIds.length).toBeLessThanOrEqual(MAX_PARTICIPANTS_PER_PAGE);
   });
 
-  it("splits winners pages once more than 16 entrants are represented", () => {
+  it("keeps winners on one page even once more than 16 entrants are represented", () => {
     const rounds = [makeRound("WINNERS", 1, 12)];
     const entrantOrder = Array.from({ length: 24 }, (_, index) => `r${index + 1}`);
 
@@ -69,13 +69,11 @@ describe("buildBracketTabs", () => {
     });
 
     const winners = tabs.find((entry) => entry.key === "WINNERS");
-    expect(winners?.pages.length).toBeGreaterThan(1);
-    expect(
-      winners?.pages.every((page) => page.entrantIds.length <= MAX_PARTICIPANTS_PER_PAGE)
-    ).toBe(true);
+    expect(winners?.pages).toHaveLength(1);
+    expect(winners?.pages[0]?.rounds[0]?.matches).toHaveLength(12);
   });
 
-  it("does not duplicate shared cross-page rounds onto winners overflow pages", () => {
+  it("keeps official winners rounds together on one page", () => {
     const rounds: BracketPagingRound[] = [
       makeRound("WINNERS", 1, 12),
       {
@@ -113,12 +111,12 @@ describe("buildBracketTabs", () => {
     });
 
     const winners = tabs.find((entry) => entry.key === "WINNERS");
-    expect(winners?.pages.length).toBeGreaterThan(1);
+    expect(winners?.pages).toHaveLength(1);
     expect(
-      winners?.pages.some((page) =>
-        page.rounds.some((round) => round.matches.some((match) => match.id === "WINNERS-2-1"))
+      winners?.pages[0]?.rounds.some((round) =>
+        round.matches.some((match) => match.id === "WINNERS-2-1")
       )
-    ).toBe(false);
+    ).toBe(true);
   });
 
   it("re-packs sparse adjacent pages back down when they fit within 16 entrants", () => {
@@ -204,7 +202,7 @@ describe("buildBracketTabs", () => {
     expect(winners?.pages[0]?.entrantIds.length).toBeLessThanOrEqual(MAX_PARTICIPANTS_PER_PAGE);
   });
 
-  it("relabels merged pages sequentially after repacking", () => {
+  it("keeps a single winners page title after flattening", () => {
     const rounds = [makeRound("WINNERS", 1, 10)];
     const entrantOrder = Array.from({ length: 20 }, (_, index) => `r${index + 1}`);
 
@@ -218,8 +216,8 @@ describe("buildBracketTabs", () => {
     });
 
     const winners = tabs.find((entry) => entry.key === "WINNERS");
-    expect(winners?.pages[0]?.title).toBe("Winners Page 1");
-    expect(winners?.pages[1]?.title).toBe("Winners Page 2");
+    expect(winners?.pages).toHaveLength(1);
+    expect(winners?.pages[0]?.title).toBe("Brackets");
   });
 
   it("merges pages based on visible entrants when sparse later-state content fits back onto one page", () => {
@@ -296,7 +294,7 @@ describe("buildBracketTabs", () => {
     ).toBe(true);
   });
 
-  it("keeps overflow pages as bracket subtrees instead of round-one-only lists", () => {
+  it("keeps preview winners on one page even with downstream rounds", () => {
     const rounds: BracketPagingRound[] = [
       makeRound("WINNERS", 1, 12),
       {
@@ -332,7 +330,61 @@ describe("buildBracketTabs", () => {
     });
 
     const winners = tabs.find((entry) => entry.key === "WINNERS");
-    expect(winners?.pages.length).toBe(2);
-    expect(winners?.pages[1]?.rounds.length).toBeGreaterThan(1);
+    expect(winners?.pages).toHaveLength(1);
+    expect(winners?.pages[0]?.rounds.length).toBeGreaterThan(1);
+  });
+
+  it("keeps preview on a single expanding page instead of splitting for odd entrant overflow", () => {
+    const rounds: BracketPagingRound[] = [
+      {
+        id: "WINNERS-1",
+        side: "WINNERS",
+        roundNumber: 1,
+        name: "Winners Round 1",
+        matches: [
+          ...Array.from({ length: 8 }, (_, index) => ({
+            id: `WINNERS-1-full-${index + 1}`,
+            side: "WINNERS" as const,
+            roundNumber: 1,
+            sequence: index + 1,
+            status: "READY",
+            player1Name: `P${index * 2 + 1}`,
+            player2Name: `P${index * 2 + 2}`,
+            winnerName: null,
+            scoreLabel: null,
+            nextMatchId: null,
+            originEntrantIds: [`r${index * 2 + 1}`, `r${index * 2 + 2}`],
+            displayEntrantIds: [`r${index * 2 + 1}`, `r${index * 2 + 2}`]
+          })),
+          {
+            id: "WINNERS-1-bye",
+            side: "WINNERS",
+            roundNumber: 1,
+            sequence: 9,
+            status: "PENDING",
+            player1Name: "P17",
+            player2Name: "",
+            winnerName: null,
+            scoreLabel: null,
+            nextMatchId: null,
+            originEntrantIds: ["r17"],
+            displayEntrantIds: ["r17"]
+          }
+        ]
+      }
+    ];
+
+    const tabs = buildBracketTabs({
+      snapshot: null,
+      mode: "PREVIEW",
+      rounds,
+      placements: [],
+      entrantOrder: Array.from({ length: 17 }, (_, index) => `r${index + 1}`),
+      registrationCount: 17
+    });
+
+    const winners = tabs.find((entry) => entry.key === "WINNERS");
+    expect(winners?.pages).toHaveLength(1);
+    expect(winners?.pages[0]?.rounds[0]?.matches).toHaveLength(9);
   });
 });

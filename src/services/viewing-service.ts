@@ -26,7 +26,7 @@ export interface TournamentRulesView {
   tournamentId: string;
   tournamentName: string;
   sections: Array<{
-    key: "mode" | "win_conditions" | "summoners" | "extra_info";
+    key: "mode" | "win_conditions" | "bans" | "summoners" | "extra_info";
     title: string;
     items: string[];
   }>;
@@ -125,6 +125,14 @@ export interface StaffPanelView {
   }>;
 }
 
+export interface TournamentIgnLookupView {
+  tournamentId: string;
+  tournamentName: string;
+  displayName: string;
+  leagueIgn: string | null;
+  locationLabel: string | null;
+}
+
 export class ViewingService {
   public constructor(private readonly tournamentRepository: TournamentRepository) {}
 
@@ -204,6 +212,11 @@ export class ViewingService {
           key: "win_conditions",
           title: "Win Conditions",
           items: settings?.rulesWinConditions ?? []
+        },
+        {
+          key: "bans",
+          title: "Bans",
+          items: settings?.rulesBans ?? []
         },
         {
           key: "summoners",
@@ -437,6 +450,79 @@ export class ViewingService {
       totalPages,
       totalCount: ordered.length,
       entries
+    };
+  }
+
+  public async getIgnLookup(
+    guildId: string,
+    tournamentId: string,
+    playerName: string
+  ): Promise<TournamentIgnLookupView> {
+    const tournament = await this.requireTournament(guildId, tournamentId);
+    const normalized = playerName.trim().toLowerCase();
+
+    const activeRegistrations = tournament.registrations.filter(
+      (entry) => entry.status === RegistrationStatus.ACTIVE
+    );
+
+    const exactMatches = activeRegistrations.filter(
+      (entry) => entry.participant.displayName.trim().toLowerCase() === normalized
+    );
+
+    const matchedRegistration =
+      exactMatches.length === 1
+        ? exactMatches[0]!
+        : exactMatches.length > 1
+          ? null
+          : activeRegistrations.filter((entry) =>
+              entry.participant.displayName.trim().toLowerCase().includes(normalized)
+            )[0] ?? null;
+
+    if (exactMatches.length > 1) {
+      throw new ValidationError("More than one player matched that name. Use a more specific name.");
+    }
+
+    const partialMatches =
+      exactMatches.length === 0
+        ? activeRegistrations.filter((entry) =>
+            entry.participant.displayName.trim().toLowerCase().includes(normalized)
+          )
+        : [];
+
+    if (exactMatches.length === 0 && partialMatches.length > 1) {
+      throw new ValidationError("More than one player matched that name. Use a more specific name.");
+    }
+
+    if (!matchedRegistration) {
+      throw new NotFoundError("Player not found in this tournament.");
+    }
+
+    const roundRecord = tournament.brackets.flatMap((bracket) =>
+      bracket.rounds.flatMap((round) =>
+        round.matches
+          .filter(
+            (match) =>
+              match.player1RegistrationId === matchedRegistration.id ||
+              match.player2RegistrationId === matchedRegistration.id
+          )
+          .map((match) => ({
+            bracketType: bracket.type,
+            roundNumber: round.roundNumber,
+            sequence: match.sequence
+          }))
+      )
+    )[0] ?? null;
+
+    return {
+      tournamentId: tournament.id,
+      tournamentName: tournament.name,
+      displayName: matchedRegistration.participant.displayName,
+      leagueIgn: matchedRegistration.participant.opggProfile ?? null,
+      locationLabel: roundRecord
+        ? `${this.prettyBracketType(roundRecord.bracketType)} Round ${roundRecord.roundNumber} Match ${roundRecord.sequence}`
+        : tournament.brackets.length > 0
+          ? "Not assigned to a live match yet"
+          : "Bracket not locked yet"
     };
   }
 
