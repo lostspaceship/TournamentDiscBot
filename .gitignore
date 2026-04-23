@@ -5,3 +5,4 @@ dist/
 coverage/
 *.log
 prisma/dev.db
+R3nzSkin_audit/
