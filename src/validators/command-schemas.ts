@@ -35,6 +35,18 @@ export const joinTournamentCommandSchema = z.object({
     .regex(/^[^#\r\n]{1,50}#[^#\r\n]{1,50}$/, "League ID must look like name#tag.")
 });
 
+export const addTournamentParticipantCommandSchema = z.object({
+  tournamentId: idSchema,
+  targetUserId: idSchema,
+  name: z.string().trim().min(2).max(80),
+  leagueIgn: z
+    .string()
+    .trim()
+    .min(3)
+    .max(120)
+    .regex(/^[^#\r\n]{1,50}#[^#\r\n]{1,50}$/, "League ID must look like name#tag.")
+});
+
 export const configTournamentCommandSchema = z.object({
   tournamentId: idSchema,
   seedingMethod: z.nativeEnum(SeedingMethod).optional(),
@@ -54,15 +66,75 @@ export const manualAdvanceCommandSchema = z.object({
   targetPlayerName: z.string().trim().min(2).max(80)
 });
 
+export const kickParticipantCommandSchema = z.object({
+  tournamentId: idSchema,
+  targetPlayerName: z.string().trim().min(2).max(80)
+});
+
+export const setPlayerBackCommandSchema = z.object({
+  tournamentId: idSchema,
+  targetPlayerName: z.string().trim().min(2).max(80)
+});
+
 export const switchBracketNamesCommandSchema = z.object({
   tournamentId: idSchema,
   firstPlayerName: z.string().trim().min(2).max(80),
   secondPlayerName: z.string().trim().min(2).max(80)
 });
 
+export const renameParticipantCommandSchema = z.object({
+  tournamentId: idSchema,
+  currentPlayerName: z.string().trim().min(2).max(80),
+  nextPlayerName: z.string().trim().min(2).max(80)
+});
+
 export const tournamentIgnLookupCommandSchema = z.object({
   tournamentId: idSchema,
   name: z.string().trim().min(2).max(80)
+});
+
+export const serverRulesCreateCommandSchema = z.object({
+  title: z.string().trim().min(1).max(80).default("Server Rules"),
+  text: z.string().trim().min(1).max(4000),
+  heroImageUrl: z.string().url().max(500).optional().nullable()
+});
+
+export const serverSocialsCreateCommandSchema = z.object({
+  title: z.string().trim().min(1).max(80).default("Social Links"),
+  links: z.string().trim().min(1).max(4000),
+  heroImageUrl: z.string().url().max(500).optional().nullable()
+});
+
+export const alertsTwitchCommandSchema = z.object({
+  channelId: z.string().trim().min(1).max(32),
+  username: z.string().trim().min(1).max(50),
+  roleId: z.string().trim().min(1).max(32).optional().nullable()
+});
+
+export const alertsYouTubeCommandSchema = z.object({
+  channelId: z.string().trim().min(1).max(32),
+  youtubeChannelId: z.string().trim().min(1).max(128),
+  roleId: z.string().trim().min(1).max(32).optional().nullable()
+});
+
+export const alertsRoleMessageCommandSchema = z.object({
+  channelId: z.string().trim().min(1).max(32),
+  twitchRoleId: z.string().trim().min(1).max(32).optional().nullable(),
+  youtubeRoleId: z.string().trim().min(1).max(32).optional().nullable(),
+  title: z.string().trim().min(1).max(80).default("Notification Roles"),
+  description: z.string().trim().min(1).max(1000).default("Choose which notifications you want to receive.")
+}).superRefine((value, ctx) => {
+  if (!value.twitchRoleId && !value.youtubeRoleId) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Set at least one notification role.",
+      path: ["twitchRoleId"]
+    });
+  }
+});
+
+export const alertsDisableCommandSchema = z.object({
+  platform: z.enum(["TWITCH", "YOUTUBE", "BOTH"])
 });
 
 const tournamentRulesCommandBaseSchema = z.object({

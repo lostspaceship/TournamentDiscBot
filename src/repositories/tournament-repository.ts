@@ -1,18 +1,22 @@
-import {
-  AuditAction,
-  BracketType,
-  MatchStatus,
+import pkg from "@prisma/client";
+import type {
   Prisma,
-  RegistrationStatus,
-  TournamentStatus,
-  type Tournament as PrismaTournament,
-  type Participant,
-  type Registration,
-  type Tournament
+  Tournament as PrismaTournament,
+  Participant,
+  Registration,
+  Tournament
 } from "@prisma/client";
 
 import { prisma } from "../config/prisma.js";
 import { slugify } from "../utils/slug.js";
+
+const {
+  AuditAction,
+  BracketType,
+  MatchStatus,
+  RegistrationStatus,
+  TournamentStatus
+} = pkg;
 
 export class TournamentRepository {
   public static readonly ACTIVE_STATUSES: TournamentStatus[] = [

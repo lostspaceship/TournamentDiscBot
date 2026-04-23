@@ -1,6 +1,9 @@
-import { AuditAction, Prisma } from "@prisma/client";
+import pkg from "@prisma/client";
+import type { Prisma } from "@prisma/client";
 
 import { ConflictError } from "../../utils/errors.js";
+
+const { AuditAction } = pkg;
 
 export type TransactionClient = Prisma.TransactionClient;
 

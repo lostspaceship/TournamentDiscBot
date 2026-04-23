@@ -1,4 +1,6 @@
-import { StaffRoleType } from "@prisma/client";
+import pkg from "@prisma/client";
+
+const { StaffRoleType } = pkg;
 
 export const permissionRank: Record<StaffRoleType, number> = {
   OWNER: 4,

@@ -48,12 +48,27 @@ export const tourCommandDefinition = new SlashCommandBuilder()
     subcommand.setName("start").setDescription("Start the tournament")
   )
   .addSubcommand((subcommand) =>
+    subcommand.setName("unstart").setDescription("Reopen registration")
+  )
+  .addSubcommand((subcommand) =>
     subcommand.setName("join").setDescription("Join the tournament")
       .addStringOption((option) =>
         option.setName("name").setDescription("Name to show on the bracket").setRequired(true)
       )
       .addStringOption((option) =>
         option.setName("league_ign").setDescription("Your League ID, for example test#test").setRequired(true)
+      )
+  )
+  .addSubcommand((subcommand) =>
+    subcommand.setName("add").setDescription("Add a player")
+      .addUserOption((option) =>
+        option.setName("user").setDescription("Discord user").setRequired(true)
+      )
+      .addStringOption((option) =>
+        option.setName("name").setDescription("Name to show on the bracket").setRequired(true)
+      )
+      .addStringOption((option) =>
+        option.setName("league_ign").setDescription("League ID, for example test#test").setRequired(true)
       )
   )
   .addSubcommand((subcommand) =>
@@ -88,6 +103,22 @@ export const tourCommandDefinition = new SlashCommandBuilder()
   )
   .addSubcommand((subcommand) =>
     subcommand
+      .setName("back")
+      .setDescription("Move a player back one round")
+      .addStringOption((option) =>
+        option.setName("name").setDescription("Player name").setRequired(true)
+      )
+  )
+  .addSubcommand((subcommand) =>
+    subcommand
+      .setName("kick")
+      .setDescription("Remove a player")
+      .addStringOption((option) =>
+        option.setName("name").setDescription("Player name").setRequired(true)
+      )
+  )
+  .addSubcommand((subcommand) =>
+    subcommand
       .setName("undo")
       .setDescription("Undo the last advance")
   )
@@ -100,6 +131,17 @@ export const tourCommandDefinition = new SlashCommandBuilder()
       )
       .addStringOption((option) =>
         option.setName("name_two").setDescription("Second player name").setRequired(true)
+      )
+  )
+  .addSubcommand((subcommand) =>
+    subcommand
+      .setName("rename")
+      .setDescription("Rename a player")
+      .addStringOption((option) =>
+        option.setName("name").setDescription("Current player name").setRequired(true)
+      )
+      .addStringOption((option) =>
+        option.setName("new_name").setDescription("New bracket name").setRequired(true)
       )
   )
   .addSubcommand((subcommand) =>

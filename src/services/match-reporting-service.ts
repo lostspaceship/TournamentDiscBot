@@ -1,11 +1,5 @@
-import {
-  AuditAction,
-  MatchOutcomeType,
-  MatchStatus,
-  Prisma,
-  RegistrationStatus,
-  TournamentStatus
-} from "@prisma/client";
+import pkg from "@prisma/client";
+import type { Prisma } from "@prisma/client";
 
 import { prisma } from "../config/prisma.js";
 import { BracketEngineFactory } from "../domain/bracket/engine.js";
@@ -28,6 +22,14 @@ import {
   writeAuditLogTx
 } from "./support/transaction-utils.js";
 import { ConflictError, NotFoundError, ValidationError } from "../utils/errors.js";
+
+const {
+  AuditAction,
+  MatchOutcomeType,
+  MatchStatus,
+  RegistrationStatus,
+  TournamentStatus
+} = pkg;
 import { sanitizeUserText } from "../utils/sanitize.js";
 
 interface MatchActionInput {
@@ -78,6 +80,15 @@ interface ManualAdvanceSelectionInput extends MatchActionInput {
   idempotencyKey: string;
 }
 
+interface SetPlayerBackSelectionInput extends MatchActionInput {
+  targetPlayerName: string;
+}
+
+interface KickParticipantSelectionInput extends MatchActionInput {
+  targetUserId?: string;
+  targetPlayerName?: string;
+}
+
 interface UndoManualAdvanceInput extends MatchActionInput {
   reportId: string;
 }
@@ -97,6 +108,13 @@ const bracketMutationAuditActions = [
   AuditAction.MANUAL_ADVANCE,
   AuditAction.MANUAL_ADVANCE_UNDONE,
   AuditAction.TOURNAMENT_FINALIZED
+] as const;
+
+const undoBlockingAuditActions = [
+  AuditAction.RESULT_CONFIRMED,
+  AuditAction.RESULT_OVERRIDDEN,
+  AuditAction.MANUAL_ADVANCE,
+  AuditAction.MANUAL_ADVANCE_UNDONE
 ] as const;
 
 export class MatchReportingService {
@@ -520,7 +538,7 @@ export class MatchReportingService {
           tournamentId: tournament.id,
           createdAt: { gt: auditLog.createdAt },
           action: {
-            in: [...bracketMutationAuditActions]
+            in: [...undoBlockingAuditActions]
           }
         },
         orderBy: { createdAt: "asc" }
@@ -599,7 +617,7 @@ export class MatchReportingService {
           tournamentId: tournament.id,
           createdAt: { gt: latestUndoableAdvance.createdAt },
           action: {
-            in: [...bracketMutationAuditActions]
+            in: [...undoBlockingAuditActions]
           }
         },
         orderBy: { createdAt: "asc" }
@@ -618,6 +636,288 @@ export class MatchReportingService {
     });
 
     return { reportId };
+  }
+
+  public async setPlayerBackBySelection(input: SetPlayerBackSelectionInput) {
+    const result = await prisma.$transaction(async (tx) => {
+      await lockTournamentTx(tx, input.tournamentId);
+      const tournament = await this.loadTournamentTx(tx, input.tournamentId, input.guildId);
+
+      this.validateTournamentIsActive(tournament);
+
+      const targetRegistration = this.findRegistrationByName(tournament, input.targetPlayerName);
+      if (targetRegistration.status !== RegistrationStatus.ACTIVE) {
+        throw new ConflictError("That player is already out.");
+      }
+
+      const currentSnapshot = buildPersistedSnapshotFromTournament(tournament);
+      const candidateMatches = Object.values(currentSnapshot.matches)
+        .filter((match) =>
+          match.slots.some(
+            (slot) =>
+              slot.entrantId === targetRegistration.id &&
+              slot.sourceMatchId != null &&
+              slot.sourceOutcome === "WINNER"
+          )
+        )
+        .sort((left, right) => right.roundNumber - left.roundNumber || right.sequence - left.sequence);
+
+      if (candidateMatches.length === 0) {
+        throw new ConflictError("That player cannot be moved back right now.");
+      }
+
+      const currentMatch = candidateMatches.find((match) => match.status !== "COMPLETED");
+      if (!currentMatch) {
+        throw new ConflictError("That player has already played the next match.");
+      }
+
+      const sourceSlot = currentMatch.slots.find(
+        (slot) =>
+          slot.entrantId === targetRegistration.id &&
+          slot.sourceMatchId != null &&
+          slot.sourceOutcome === "WINNER"
+      );
+      if (!sourceSlot?.sourceMatchId) {
+        throw new ConflictError("That player cannot be moved back right now.");
+      }
+
+      const sourceMatch = currentSnapshot.matches[sourceSlot.sourceMatchId];
+      if (!sourceMatch || sourceMatch.winnerId !== targetRegistration.id) {
+        throw new ConflictError("That player is not currently advanced from a rewritable source match.");
+      }
+
+      const manualAdvanceAudit = await this.findManualAdvanceAuditForSourceMatchTx(
+        tx,
+        tournament.id,
+        sourceMatch.id,
+        targetRegistration.id
+      );
+      if (!manualAdvanceAudit) {
+        throw new ConflictError("That slot was not created by a manual advance.");
+      }
+
+      const branchMatchIds = this.collectDescendantMatchIds(currentSnapshot, currentMatch.id);
+      const laterBlockingAudit = await this.findLaterBlockingAuditForBranchTx(
+        tx,
+        tournament.id,
+        manualAdvanceAudit.createdAt,
+        branchMatchIds
+      );
+      if (laterBlockingAudit) {
+        throw new ConflictError("That player cannot be moved back because this branch changed afterward.");
+      }
+
+      const snapshotBefore = this.extractSnapshotFromAuditLog(manualAdvanceAudit.metadataJson);
+      const previousSourceMatch = snapshotBefore.matches[sourceMatch.id];
+      const previousCurrentMatch = snapshotBefore.matches[currentMatch.id];
+      if (!previousSourceMatch || !previousCurrentMatch) {
+        throw new ConflictError("Rollback data is unavailable for that advance.");
+      }
+
+      const nextSnapshot: BracketSnapshot = {
+        ...currentSnapshot,
+        matches: {
+          ...currentSnapshot.matches,
+          [sourceMatch.id]: previousSourceMatch,
+          [currentMatch.id]: previousCurrentMatch
+        }
+      };
+
+      for (const matchId of [sourceMatch.id, currentMatch.id]) {
+        const matchNode = nextSnapshot.matches[matchId];
+        if (!matchNode) continue;
+
+        await tx.match.update({
+          where: { id: matchId },
+          data: {
+            ...this.matchNodeToUpdate(matchNode),
+            version: { increment: 1 }
+          }
+        });
+      }
+
+      await this.resetPlacementsFromSnapshotTx(tx, tournament, nextSnapshot);
+
+      const reportId = manualAdvanceAudit.targetId;
+      if (reportId) {
+        await tx.resultReport.update({
+          where: { id: reportId },
+          data: {
+            status: MatchStatus.CANCELLED,
+            reason: "Moved back by staff"
+          }
+        });
+      }
+
+      await writeAuditLogTx(tx, {
+        tournamentId: tournament.id,
+        guildId: tournament.guildId,
+        actorUserId: input.actorUserId,
+        action: AuditAction.MANUAL_ADVANCE_UNDONE,
+        targetType: "Registration",
+        targetId: targetRegistration.id,
+        metadataJson: {
+          action: "SET_PLAYER_BACK",
+          sourceAuditLogId: manualAdvanceAudit.id,
+          sourceMatchId: sourceMatch.id,
+          currentMatchId: currentMatch.id,
+          targetPlayerName: targetRegistration.participant.displayName
+        }
+      });
+
+      return {
+        targetPlayerName: targetRegistration.participant.displayName
+      };
+    });
+
+    await this.bracketSyncTarget?.syncTournamentBracket(input.tournamentId);
+    return result;
+  }
+
+  public async kickParticipantBySelection(input: KickParticipantSelectionInput) {
+    const result = await prisma.$transaction(async (tx) => {
+      await lockTournamentTx(tx, input.tournamentId);
+      const tournament = await this.loadTournamentTx(tx, input.tournamentId, input.guildId);
+      const targetRegistration = this.findRegistrationForKick(tournament, input);
+
+      if (targetRegistration.status !== RegistrationStatus.ACTIVE) {
+        throw new ConflictError("That player is already out.");
+      }
+
+      if (
+        tournament.status !== TournamentStatus.IN_PROGRESS &&
+        tournament.status !== TournamentStatus.PAUSED
+      ) {
+        await tx.registration.update({
+          where: { id: targetRegistration.id },
+          data: {
+            status: RegistrationStatus.DROPPED,
+            dropReason: "Removed by staff"
+          }
+        });
+
+        await tx.tournament.update({
+          where: { id: tournament.id },
+          data: {
+            version: {
+              increment: 1
+            }
+          }
+        });
+
+        await writeAuditLogTx(tx, {
+          tournamentId: tournament.id,
+          guildId: input.guildId,
+          actorUserId: input.actorUserId,
+          action: AuditAction.PARTICIPANT_DROPPED,
+          targetType: "Registration",
+          targetId: targetRegistration.id,
+          reason: "Removed by staff",
+          metadataJson: {
+            targetPlayerName: targetRegistration.participant.displayName
+          }
+        });
+
+        return {
+          targetPlayerName: targetRegistration.participant.displayName,
+          advancedOpponentName: null as string | null
+        };
+      }
+
+      this.validateTournamentIsActive(tournament);
+
+      const candidateMatches = tournament.brackets
+        .flatMap((bracket) =>
+          bracket.rounds.flatMap((round) =>
+            round.matches.map((match) => ({
+              match,
+              roundNumber: round.roundNumber
+            }))
+          )
+        )
+        .filter(
+          ({ match }) =>
+            (match.status === MatchStatus.READY ||
+              match.status === MatchStatus.DISPUTED ||
+              match.status === MatchStatus.AWAITING_CONFIRMATION) &&
+            (match.player1RegistrationId === targetRegistration.id ||
+              match.player2RegistrationId === targetRegistration.id)
+        )
+        .sort((left, right) => left.roundNumber - right.roundNumber || left.match.sequence - right.match.sequence);
+
+      if (candidateMatches.length === 0) {
+        throw new ConflictError("That player is not in a live match right now.");
+      }
+
+      if (candidateMatches.length > 1) {
+        throw new ConflictError("That player is in multiple live matches right now.");
+      }
+
+      const match = candidateMatches[0]!.match;
+      await lockMatchTx(tx, match.id);
+
+      const opponentRegistrationId =
+        match.player1RegistrationId === targetRegistration.id
+          ? match.player2RegistrationId
+          : match.player1RegistrationId;
+
+      if (!opponentRegistrationId) {
+        throw new ConflictError("That player has no opponent to advance yet.");
+      }
+
+      const opponentRegistration = tournament.registrations.find(
+        (entry) => entry.id === opponentRegistrationId
+      );
+
+      if (!opponentRegistration) {
+        throw new NotFoundError("Opponent registration not found.");
+      }
+
+      await this.applyManualAdvanceTx(tx, tournament, match, opponentRegistrationId, {
+        actorUserId: input.actorUserId,
+        reason: `Removed ${targetRegistration.participant.displayName} from the tournament`,
+        idempotencyKey: `kick:${input.actorUserId}:${targetRegistration.id}:${match.id}`
+      });
+
+      const selfLeave = input.targetUserId != null && input.targetUserId === input.actorUserId;
+      await tx.registration.update({
+        where: { id: targetRegistration.id },
+        data: selfLeave
+          ? {
+              status: RegistrationStatus.WITHDRAWN,
+              withdrawnAt: new Date(),
+              placement: null
+            }
+          : {
+              status: RegistrationStatus.DROPPED,
+              dropReason: "Removed by staff",
+              placement: null
+            }
+      });
+
+      await writeAuditLogTx(tx, {
+        tournamentId: tournament.id,
+        guildId: input.guildId,
+        actorUserId: input.actorUserId,
+        action: selfLeave ? AuditAction.PARTICIPANT_LEFT : AuditAction.PARTICIPANT_DROPPED,
+        targetType: "Registration",
+        targetId: targetRegistration.id,
+        reason: selfLeave ? "Left after the tournament started." : "Removed by staff",
+        metadataJson: {
+          targetPlayerName: targetRegistration.participant.displayName,
+          matchId: match.id,
+          afterStart: true
+        }
+      });
+
+      return {
+        targetPlayerName: targetRegistration.participant.displayName,
+        advancedOpponentName: opponentRegistration.participant.displayName
+      };
+    });
+
+    await this.bracketSyncTarget?.syncTournamentBracket(input.tournamentId);
+    return result;
   }
 
   private async applyConfirmedOutcomeTx(
@@ -1101,6 +1401,146 @@ export class MatchReportingService {
     }
 
     return partialMatches[0]!;
+  }
+
+  private findRegistrationByName(
+    tournament: TournamentWithRelations,
+    inputName: string
+  ) {
+    const normalized = inputName.trim().toLowerCase();
+    const exactMatches = tournament.registrations.filter(
+      (entry) => entry.participant.displayName.trim().toLowerCase() === normalized
+    );
+
+    if (exactMatches.length === 1) {
+      return exactMatches[0]!;
+    }
+
+    if (exactMatches.length > 1) {
+      throw new ConflictError("Multiple players matched that name. Be more specific.");
+    }
+
+    const partialMatches = tournament.registrations.filter((entry) =>
+      entry.participant.displayName.trim().toLowerCase().includes(normalized)
+    );
+
+    if (partialMatches.length === 0) {
+      throw new NotFoundError("Player not found.");
+    }
+
+    if (partialMatches.length > 1) {
+      throw new ConflictError("Multiple players matched that name. Be more specific.");
+    }
+
+    return partialMatches[0]!;
+  }
+
+  private async findManualAdvanceAuditForSourceMatchTx(
+    tx: TransactionClient,
+    tournamentId: string,
+    sourceMatchId: string,
+    winnerRegistrationId: string
+  ) {
+    const audits = await tx.auditLog.findMany({
+      where: {
+        tournamentId,
+        action: AuditAction.MANUAL_ADVANCE
+      },
+      orderBy: { createdAt: "desc" }
+    });
+
+    return (
+      audits.find((entry) => {
+        const metadata =
+          entry.metadataJson && typeof entry.metadataJson === "object" && !Array.isArray(entry.metadataJson)
+            ? (entry.metadataJson as Record<string, unknown>)
+            : null;
+
+        return (
+          metadata?.sourceMatchId === sourceMatchId &&
+          metadata?.winnerRegistrationId === winnerRegistrationId
+        );
+      }) ?? null
+    );
+  }
+
+  private async findLaterBlockingAuditForBranchTx(
+    tx: TransactionClient,
+    tournamentId: string,
+    createdAfter: Date,
+    branchMatchIds: Set<string>
+  ) {
+    const audits = await tx.auditLog.findMany({
+      where: {
+        tournamentId,
+        createdAt: { gt: createdAfter },
+        action: {
+          in: [...undoBlockingAuditActions]
+        }
+      },
+      orderBy: { createdAt: "asc" }
+    });
+
+    return (
+      audits.find((entry) => {
+        const metadata =
+          entry.metadataJson && typeof entry.metadataJson === "object" && !Array.isArray(entry.metadataJson)
+            ? (entry.metadataJson as Record<string, unknown>)
+            : null;
+        const matchId =
+          typeof metadata?.matchId === "string"
+            ? metadata.matchId
+            : typeof metadata?.sourceMatchId === "string"
+              ? metadata.sourceMatchId
+              : null;
+
+        return matchId != null && branchMatchIds.has(matchId);
+      }) ?? null
+    );
+  }
+
+  private collectDescendantMatchIds(snapshot: BracketSnapshot, matchId: string): Set<string> {
+    const collected = new Set<string>();
+    const visit = (currentMatchId: string | null) => {
+      if (!currentMatchId || collected.has(currentMatchId)) {
+        return;
+      }
+
+      collected.add(currentMatchId);
+      const match = snapshot.matches[currentMatchId];
+      if (!match) {
+        return;
+      }
+
+      visit(match.nextMatchId);
+      visit(match.loserNextMatchId);
+    };
+
+    visit(matchId);
+    return collected;
+  }
+
+  private findRegistrationForKick(
+    tournament: TournamentWithRelations,
+    input: Pick<KickParticipantSelectionInput, "targetUserId" | "targetPlayerName">
+  ) {
+    if (input.targetUserId) {
+      const registration = tournament.registrations.find(
+        (entry) => entry.participant.discordUserId === input.targetUserId
+      );
+
+      if (!registration) {
+        throw new NotFoundError("Player not found.");
+      }
+
+      return registration;
+    }
+
+    if (!input.targetPlayerName) {
+      throw new ValidationError("A player name is required.");
+    }
+
+    return this.findRegistrationByName(tournament, input.targetPlayerName);
   }
 
   private requireMatchRecord(tournament: TournamentWithRelations, matchId: string) {

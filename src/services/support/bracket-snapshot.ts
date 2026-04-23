@@ -1,11 +1,4 @@
-import {
-  BracketType,
-  MatchStatus,
-  RegistrationStatus,
-  SeedingMethod,
-  TournamentFormat,
-  TournamentStatus
-} from "@prisma/client";
+import pkg from "@prisma/client";
 
 import { BracketEngineFactory } from "../../domain/bracket/engine.js";
 import { seedEntrants } from "../../domain/bracket/seeding.js";
@@ -16,6 +9,15 @@ import type {
   SeededEntrant
 } from "../../domain/bracket/types.js";
 import type { TournamentRepository } from "../../repositories/tournament-repository.js";
+
+const {
+  BracketType,
+  MatchStatus,
+  RegistrationStatus,
+  SeedingMethod,
+  TournamentFormat,
+  TournamentStatus
+} = pkg;
 
 export type TournamentWithBracketData = NonNullable<
   Awaited<ReturnType<TournamentRepository["getTournament"]>>

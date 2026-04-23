@@ -1,8 +1,10 @@
-import { StaffRoleType } from "@prisma/client";
+import pkg from "@prisma/client";
 import type { GuildMember } from "discord.js";
 
 import type { GuildConfigRepository } from "../repositories/guild-config-repository.js";
 import { PermissionError } from "../utils/errors.js";
+
+const { StaffRoleType } = pkg;
 
 export const permissionRank: Record<StaffRoleType, number> = {
   OWNER: 4,

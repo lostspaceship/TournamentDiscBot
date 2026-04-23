@@ -5,7 +5,7 @@ import {
   EmbedBuilder,
   StringSelectMenuBuilder
 } from "discord.js";
-import { MatchStatus, TournamentStatus } from "@prisma/client";
+import pkg from "@prisma/client";
 
 import { buildSignedCustomId } from "../interactions/secure-payload.js";
 import type {
@@ -16,6 +16,8 @@ import type {
   TournamentRulesView,
   StaffPanelView
 } from "../services/viewing-service.js";
+
+const { MatchStatus, TournamentStatus } = pkg;
 
 const colors = {
   brand: 0x2b6ef2,
@@ -220,8 +222,8 @@ export const buildOverviewWithParticipantsComponents = (
   totalPages: number
 ) => buildOverviewInfoComponents(tournamentId, "players", page, totalPages);
 
-export const buildRulesEmbed = (view: TournamentRulesView): EmbedBuilder =>
-  new EmbedBuilder()
+export const buildRulesEmbed = (view: TournamentRulesView): EmbedBuilder => {
+  return new EmbedBuilder()
     .setColor(colors.neutral)
     .setTitle("Rules")
     .addFields(
@@ -234,6 +236,7 @@ export const buildRulesEmbed = (view: TournamentRulesView): EmbedBuilder =>
         inline: false
       }))
     );
+};
 
 export const buildOverviewInfoComponents = (
   tournamentId: string,

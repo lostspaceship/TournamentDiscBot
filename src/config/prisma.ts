@@ -1,6 +1,8 @@
-import { PrismaClient } from "@prisma/client";
+import pkg from "@prisma/client";
 
 import { logger } from "./logger.js";
+
+const { PrismaClient } = pkg;
 
 declare global {
   // eslint-disable-next-line no-var

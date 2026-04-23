@@ -1,6 +1,9 @@
-import { StaffRoleType, type GuildConfig, type StaffRole } from "@prisma/client";
+import pkg from "@prisma/client";
+import type { Prisma, GuildConfig, StaffRole } from "@prisma/client";
 
 import { prisma } from "../config/prisma.js";
+
+const { StaffRoleType } = pkg;
 
 export class GuildConfigRepository {
   public async getOrCreate(guildId: string): Promise<GuildConfig> {
@@ -34,6 +37,30 @@ export class GuildConfigRepository {
       },
       update: {},
       create: args
+    });
+  }
+
+  public async updateConfig(
+    guildId: string,
+    data: Prisma.GuildConfigUpdateInput
+  ): Promise<GuildConfig> {
+    await this.getOrCreate(guildId);
+
+    return prisma.guildConfig.update({
+      where: { guildId },
+      data
+    });
+  }
+
+  public async listConfigsWithAlerts(): Promise<GuildConfig[]> {
+    return prisma.guildConfig.findMany({
+      where: {
+        OR: [
+          { twitchAlertEnabled: true },
+          { youtubeAlertEnabled: true }
+        ]
+      },
+      orderBy: { createdAt: "asc" }
     });
   }
 }

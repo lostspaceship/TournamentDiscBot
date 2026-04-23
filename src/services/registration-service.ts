@@ -1,11 +1,7 @@
 import crypto from "node:crypto";
 
-import {
-  AuditAction,
-  Prisma,
-  RegistrationStatus,
-  TournamentStatus
-} from "@prisma/client";
+import pkg from "@prisma/client";
+import type { Prisma } from "@prisma/client";
 
 import { prisma } from "../config/prisma.js";
 import { TournamentRepository } from "../repositories/tournament-repository.js";
@@ -18,10 +14,13 @@ import type { BracketSyncTarget } from "./support/bracket-sync-target.js";
 import { ConflictError, NotFoundError } from "../utils/errors.js";
 import { sanitizeUserText } from "../utils/sanitize.js";
 
+const { AuditAction, RegistrationStatus, TournamentStatus } = pkg;
+
 interface JoinTournamentInput {
   guildId: string;
   tournamentId: string;
   actorUserId: string;
+  targetUserId?: string;
   displayName: string;
   opggProfile: string;
 }
@@ -59,6 +58,17 @@ export class RegistrationService {
   ) {}
 
   public async joinTournament(input: JoinTournamentInput): Promise<JoinTournamentResult> {
+    return this.registerParticipant({
+      ...input,
+      targetUserId: input.actorUserId
+    });
+  }
+
+  public async addParticipantByStaff(input: JoinTournamentInput): Promise<JoinTournamentResult> {
+    return this.registerParticipant(input);
+  }
+
+  private async registerParticipant(input: JoinTournamentInput): Promise<JoinTournamentResult> {
     try {
       const result = await prisma.$transaction(async (tx) => {
         await lockTournamentTx(tx, input.tournamentId);
@@ -89,7 +99,7 @@ export class RegistrationService {
           where: {
             guildId_discordUserId: {
               guildId: input.guildId,
-              discordUserId: input.actorUserId
+              discordUserId: input.targetUserId ?? input.actorUserId
             }
           },
           update: {
@@ -98,7 +108,7 @@ export class RegistrationService {
           },
           create: {
             guildId: input.guildId,
-            discordUserId: input.actorUserId,
+            discordUserId: input.targetUserId ?? input.actorUserId,
             displayName: sanitizeUserText(input.displayName, 80),
             opggProfile: sanitizeUserText(input.opggProfile, 120)
           }

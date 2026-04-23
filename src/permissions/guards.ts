@@ -1,8 +1,10 @@
-import { StaffRoleType } from "@prisma/client";
+import pkg from "@prisma/client";
 import type { GuildMember } from "discord.js";
 
 import type { PermissionService } from "./service.js";
 import type { ParticipantAccessResult } from "./types.js";
+
+const { StaffRoleType } = pkg;
 
 export const requireAdmin = async (
   permissionService: PermissionService,

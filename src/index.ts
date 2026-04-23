@@ -22,6 +22,11 @@ import { ViewingService } from "./services/viewing-service.js";
 import { tournamentViewHandler } from "./interactions/tournament-view-handler.js";
 import { tournamentStaffHandler } from "./interactions/tournament-staff-handler.js";
 import { tournamentBracketHandler } from "./interactions/tournament-bracket-handler.js";
+import { alertRoleHandler } from "./interactions/alert-role-handler.js";
+import { TwitchApiService } from "./services/twitch-api-service.js";
+import { YouTubeFeedService } from "./services/youtube-feed-service.js";
+import { AlertAdminService } from "./services/alert-admin-service.js";
+import { AlertPollingService } from "./services/alert-polling-service.js";
 
 const runtime: BootstrapContext["runtime"] = {
   startedAt: new Date(),
@@ -51,10 +56,26 @@ const adminTournamentService = new AdminTournamentService(
   tournamentRepository,
   bracketSyncService
 );
+const twitchApiService = new TwitchApiService();
+const youTubeFeedService = new YouTubeFeedService();
+const alertAdminService = new AlertAdminService(
+  client,
+  guildConfigRepository,
+  twitchApiService,
+  youTubeFeedService
+);
+const alertPollingService = new AlertPollingService(
+  client,
+  logger,
+  guildConfigRepository,
+  twitchApiService,
+  youTubeFeedService
+);
 const registrationService = new RegistrationService(tournamentRepository, bracketSyncService);
 const matchReportingService = new MatchReportingService(tournamentRepository, bracketSyncService);
 const viewingService = new ViewingService(tournamentRepository);
 const interactionHandlers: BootstrapContext["interactionHandlers"] = [
+  alertRoleHandler,
   tournamentViewHandler,
   tournamentStaffHandler,
   tournamentBracketHandler
@@ -77,6 +98,8 @@ const context: BootstrapContext = {
   bracketSyncService,
   tournamentRepository,
   adminTournamentService,
+  alertAdminService,
+  alertPollingService,
   registrationService,
   matchReportingService,
   viewingService
@@ -88,6 +111,7 @@ await runStartupChecks();
 
 client.once("clientReady", () => {
   runtime.readyAt = new Date();
+  alertPollingService.start();
   logger.info(
     {
       user: client.user?.tag,

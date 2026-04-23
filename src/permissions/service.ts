@@ -1,4 +1,4 @@
-import { RegistrationStatus, StaffRoleType } from "@prisma/client";
+import pkg from "@prisma/client";
 import type { GuildMember } from "discord.js";
 
 import { GuildConfigRepository } from "../repositories/guild-config-repository.js";
@@ -11,6 +11,8 @@ import type {
   ParticipantScope,
   PermissionAuditHook
 } from "./types.js";
+
+const { RegistrationStatus, StaffRoleType } = pkg;
 
 export class PermissionService {
   public constructor(

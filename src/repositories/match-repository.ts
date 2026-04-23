@@ -1,12 +1,9 @@
-import {
-  MatchStatus,
-  Prisma,
-  RegistrationStatus,
-  type Match,
-  type ResultReport
-} from "@prisma/client";
+import pkg from "@prisma/client";
+import type { Prisma, Match, ResultReport } from "@prisma/client";
 
 import { prisma } from "../config/prisma.js";
+
+const { MatchStatus, RegistrationStatus } = pkg;
 
 export class MatchRepository {
   public async getMatch(matchId: string) {

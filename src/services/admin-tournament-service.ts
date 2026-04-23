@@ -1,11 +1,5 @@
-import {
-  AuditAction,
-  Prisma,
-  RegistrationStatus,
-  SeedingMethod,
-  TournamentFormat,
-  TournamentStatus
-} from "@prisma/client";
+import pkg from "@prisma/client";
+import type { Prisma } from "@prisma/client";
 
 import { prisma } from "../config/prisma.js";
 import { BracketEngineFactory } from "../domain/bracket/engine.js";
@@ -27,6 +21,14 @@ import { lockTournamentTx, writeAuditLogTx } from "./support/transaction-utils.j
 import { ConflictError, NotFoundError, ValidationError } from "../utils/errors.js";
 import { sanitizeUserText } from "../utils/sanitize.js";
 import { slugify } from "../utils/slug.js";
+
+const {
+  AuditAction,
+  RegistrationStatus,
+  SeedingMethod,
+  TournamentFormat,
+  TournamentStatus
+} = pkg;
 
 interface CreateTournamentInput {
   guildId: string;
@@ -74,6 +76,11 @@ interface ReseedTournamentInput extends SimpleTournamentActionInput {
 interface SwitchBracketNamesInput extends SimpleTournamentActionInput {
   firstPlayerName: string;
   secondPlayerName: string;
+}
+
+interface RenameParticipantInput extends SimpleTournamentActionInput {
+  currentPlayerName: string;
+  nextPlayerName: string;
 }
 
 type TournamentWithRelations = NonNullable<
@@ -370,6 +377,79 @@ export class AdminTournamentService {
     await this.bracketSyncTarget?.syncTournamentBracket(input.tournamentId);
   }
 
+  public async rollbackTournamentStart(input: SimpleTournamentActionInput) {
+    await prisma.$transaction(async (tx) => {
+      await lockTournamentTx(tx, input.tournamentId);
+      const tournament = await this.loadTournamentWithRelationsTx(tx, input.tournamentId, input.guildId);
+
+      if (
+        tournament.status !== TournamentStatus.IN_PROGRESS &&
+        tournament.status !== TournamentStatus.PAUSED
+      ) {
+        throw new ConflictError("Only started tournaments can be reopened.");
+      }
+
+      if (tournament.brackets.length === 0) {
+        throw new ConflictError("There is no generated bracket to roll back.");
+      }
+
+      const resultReportCount = await tx.resultReport.count({
+        where: { tournamentId: tournament.id }
+      });
+
+      if (resultReportCount > 0) {
+        throw new ConflictError("The tournament has already progressed and can no longer be reopened.");
+      }
+
+      await tx.bracket.deleteMany({
+        where: { tournamentId: tournament.id }
+      });
+
+      await tx.seed.deleteMany({
+        where: { tournamentId: tournament.id }
+      });
+
+      await tx.registration.updateMany({
+        where: {
+          tournamentId: tournament.id,
+          status: {
+            in: [RegistrationStatus.ACTIVE, RegistrationStatus.ELIMINATED]
+          }
+        },
+        data: {
+          status: RegistrationStatus.ACTIVE,
+          placement: null
+        }
+      });
+
+      await tx.tournament.update({
+        where: { id: tournament.id },
+        data: {
+          status: TournamentStatus.REGISTRATION_OPEN,
+          startedAt: null,
+          completedAt: null,
+          version: {
+            increment: 1
+          }
+        }
+      });
+
+      await writeAuditLogTx(tx, {
+        tournamentId: tournament.id,
+        guildId: input.guildId,
+        actorUserId: input.actorUserId,
+        action: AuditAction.TOURNAMENT_UPDATED,
+        targetType: "Tournament",
+        targetId: tournament.id,
+        metadataJson: {
+          action: "ROLLBACK_START"
+        }
+      });
+    });
+
+    await this.bracketSyncTarget?.syncTournamentBracket(input.tournamentId);
+  }
+
   public async reseedTournament(input: ReseedTournamentInput) {
     await prisma.$transaction(async (tx) => {
       await lockTournamentTx(tx, input.tournamentId);
@@ -457,17 +537,13 @@ export class AdminTournamentService {
       await lockTournamentTx(tx, input.tournamentId);
       const tournament = await this.loadTournamentWithRelationsTx(tx, input.tournamentId, input.guildId);
 
-      if (
-        tournament.status !== TournamentStatus.REGISTRATION_OPEN &&
-        tournament.status !== TournamentStatus.REGISTRATION_CLOSED &&
-        tournament.status !== TournamentStatus.CHECK_IN
-      ) {
-        throw new ConflictError("Bracket names can only be switched before the tournament starts.");
-      }
-
-      if (tournament.brackets.length > 0) {
-        throw new ConflictError("Bracket names can only be switched before the bracket is locked.");
-      }
+        if (
+          tournament.status === TournamentStatus.CANCELLED ||
+          tournament.status === TournamentStatus.FINALIZED ||
+          tournament.status === TournamentStatus.ARCHIVED
+        ) {
+          throw new ConflictError("Bracket names cannot be switched in this tournament state.");
+        }
 
       const activeRegistrations = tournament.registrations.filter(
         (entry) => entry.status === RegistrationStatus.ACTIVE
@@ -524,6 +600,69 @@ export class AdminTournamentService {
     await this.bracketSyncTarget?.syncTournamentBracket(input.tournamentId);
   }
 
+  public async renameParticipant(input: RenameParticipantInput) {
+    await prisma.$transaction(async (tx) => {
+      await lockTournamentTx(tx, input.tournamentId);
+      const tournament = await this.loadTournamentWithRelationsTx(tx, input.tournamentId, input.guildId);
+
+      if (
+        tournament.status === TournamentStatus.CANCELLED ||
+        tournament.status === TournamentStatus.FINALIZED ||
+        tournament.status === TournamentStatus.ARCHIVED
+      ) {
+        throw new ConflictError("Players cannot be renamed in this tournament state.");
+      }
+
+      const registration = this.findRegistrationByDisplayName(
+        tournament.registrations,
+        input.currentPlayerName
+      );
+      const nextPlayerName = sanitizeUserText(input.nextPlayerName, 80);
+
+      const duplicate = tournament.registrations.find(
+        (entry) =>
+          entry.id !== registration.id &&
+          entry.participant.displayName.trim().toLowerCase() === nextPlayerName.trim().toLowerCase()
+      );
+      if (duplicate) {
+        throw new ConflictError(`"${nextPlayerName}" is already in use.`);
+      }
+
+      const previousPlayerName = registration.participant.displayName;
+      await tx.participant.update({
+        where: { id: registration.participantId },
+        data: {
+          displayName: nextPlayerName
+        }
+      });
+
+      await tx.tournament.update({
+        where: { id: tournament.id },
+        data: {
+          version: {
+            increment: 1
+          }
+        }
+      });
+
+      await writeAuditLogTx(tx, {
+        tournamentId: tournament.id,
+        guildId: input.guildId,
+        actorUserId: input.actorUserId,
+        action: AuditAction.TOURNAMENT_UPDATED,
+        targetType: "Participant",
+        targetId: registration.participantId,
+        metadataJson: {
+          action: "RENAME_PARTICIPANT",
+          previousPlayerName,
+          nextPlayerName
+        }
+      });
+    });
+
+    await this.bracketSyncTarget?.syncTournamentBracket(input.tournamentId);
+  }
+
   public async disqualifyParticipant(input: ModerationInput) {
     return this.updateParticipantModeration(input, RegistrationStatus.DISQUALIFIED, AuditAction.PARTICIPANT_DISQUALIFIED);
   }
@@ -568,9 +707,9 @@ export class AdminTournamentService {
       SUMMONERS: "rulesSummoners",
       EXTRA_INFO: "rulesExtraInfo"
     } as const;
-
-    const field = fieldMap[input.section];
-    const sanitizedValue = input.value ? sanitizeUserText(input.value, 180) : undefined;
+    const auditValue = input.value
+      ? sanitizeUserText(input.value, 180)
+      : null;
 
     await prisma.$transaction(async (tx) => {
       await lockTournamentTx(tx, input.tournamentId);
@@ -584,6 +723,10 @@ export class AdminTournamentService {
         throw new NotFoundError("Tournament settings not found.");
       }
 
+      const field = fieldMap[input.section];
+      const sanitizedValue = input.value
+        ? sanitizeUserText(input.value, 180)
+        : undefined;
       const currentItems = [...(settings[field] as string[])];
       let nextItems: string[];
 
@@ -627,7 +770,7 @@ export class AdminTournamentService {
         metadataJson: {
           rulesSection: input.section,
           rulesMode: input.mode,
-          ruleValue: sanitizedValue ?? null
+          ruleValue: auditValue
         }
       });
     });

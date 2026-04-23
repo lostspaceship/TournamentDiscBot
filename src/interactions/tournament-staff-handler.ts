@@ -1,10 +1,12 @@
-import { StaffRoleType } from "@prisma/client";
+import pkg from "@prisma/client";
 import type { ButtonInteraction, Interaction } from "discord.js";
 
 import type { BootstrapContext, InteractionHandlerModule } from "../bootstrap/types.js";
 import { env } from "../config/env.js";
 import { parseSignedCustomId } from "./secure-payload.js";
 import { AppError, PermissionError } from "../utils/errors.js";
+
+const { StaffRoleType } = pkg;
 
 const asGuildMember = (interaction: ButtonInteraction) => {
   if (!interaction.inCachedGuild()) {

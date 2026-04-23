@@ -16,6 +16,8 @@ import type { InteractionGuard } from "../services/interaction-guard.js";
 import type { MatchReportingService } from "../services/match-reporting-service.js";
 import type { RegistrationService } from "../services/registration-service.js";
 import type { ViewingService } from "../services/viewing-service.js";
+import type { AlertAdminService } from "../services/alert-admin-service.js";
+import type { AlertPollingService } from "../services/alert-polling-service.js";
 import type { TournamentRepository } from "../repositories/tournament-repository.js";
 
 export interface RuntimeState {
@@ -48,6 +50,8 @@ export interface BootstrapContext {
   bracketSyncService: BracketSyncService;
   tournamentRepository: TournamentRepository;
   adminTournamentService: AdminTournamentService;
+  alertAdminService: AlertAdminService;
+  alertPollingService: AlertPollingService;
   registrationService: RegistrationService;
   matchReportingService: MatchReportingService;
   viewingService: ViewingService;

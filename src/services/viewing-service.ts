@@ -1,14 +1,16 @@
-import {
+import pkg from "@prisma/client";
+
+import { TournamentRepository } from "../repositories/tournament-repository.js";
+import { resolveTournamentBracketSnapshot } from "./support/bracket-snapshot.js";
+import { NotFoundError, ValidationError } from "../utils/errors.js";
+
+const {
   BracketType,
   MatchStatus,
   RegistrationStatus,
   StaffRoleType,
   TournamentStatus
-} from "@prisma/client";
-
-import { TournamentRepository } from "../repositories/tournament-repository.js";
-import { resolveTournamentBracketSnapshot } from "./support/bracket-snapshot.js";
-import { NotFoundError, ValidationError } from "../utils/errors.js";
+} = pkg;
 
 type TournamentWithRelations = NonNullable<Awaited<ReturnType<TournamentRepository["getTournament"]>>>;
 

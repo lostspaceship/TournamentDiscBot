@@ -1,6 +1,9 @@
-import { BracketType, MatchStatus, type Prisma } from "@prisma/client";
+import pkg from "@prisma/client";
+import type { Prisma } from "@prisma/client";
 
 import type { BracketSnapshot } from "../../domain/bracket/types.js";
+
+const { BracketType, MatchStatus } = pkg;
 
 export const persistBracketSnapshotTx = async (
   tx: Prisma.TransactionClient,

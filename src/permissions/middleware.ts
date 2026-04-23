@@ -1,9 +1,11 @@
-import { StaffRoleType } from "@prisma/client";
+import pkg from "@prisma/client";
 import type { GuildMember } from "discord.js";
 
 import { replyPermissionDenied } from "./deny.js";
 import type { PermissionService } from "./service.js";
 import type { GuardedInteraction } from "./types.js";
+
+const { StaffRoleType } = pkg;
 
 export const ensureGuildInteraction = (
   interaction: GuardedInteraction
